@@ -653,7 +653,7 @@ def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        "if grep -q -- 'version: 3.0.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+        "if grep -q -- 'version: 3.1.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
     ]
     check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
     if not check_res or check_res.returncode != 0:
@@ -1185,13 +1185,13 @@ def binary_zip_append_filter(target_path, delta_path):
         f_target.write(new_eocd)
         f_target.truncate()
 
-def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, auto_transfer=False, host='kindle.local', port=2222, user='root', password=None, key_path=None):
+def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_to_pc=True, auto_transfer=False, host='kindle.local', port=2222, user='root', password=None, key_path=None):
     """
-    Appends delta_zip into local_target_cbz on PC via instant binary append (O(delta)).
+    Appends delta_zip into local_target_cbz on PC via instant binary append (O(delta)) if save_to_pc is True.
     Smartly de-duplicates existing chapter copies and avoids duplicating content.
     If auto_transfer is True:
-      - If volume does NOT exist on Kindle, sends local_target_cbz directly.
-      - If volume DOES exist on Kindle, sends delta_zip to Kindle /tmp/ and runs merge_volume.lua.
+      - If volume does NOT exist on Kindle, sends initial volume directly.
+      - If volume DOES exist on Kindle, sends delta_zip to Kindle and runs merge_volume.lua.
     """
     exp_target = os.path.expanduser(local_target_cbz)
     exp_delta = os.path.expanduser(delta_zip_path)
@@ -1199,53 +1199,54 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, auto_
     if not os.path.exists(exp_delta):
         return {'status': 'error', 'message': f'Delta zip not found: {exp_delta}'}
 
-    os.makedirs(os.path.dirname(exp_target), exist_ok=True)
     target_existed = os.path.exists(exp_target)
 
-    # 1. Update local CBZ on PC
-    if not target_existed:
-        # Initial creation: move delta directly to target
-        shutil.move(exp_delta, exp_target)
-    else:
-        # True In-Place Binary Append (O(delta)) with safe fallback
-        try:
-            binary_zip_append_filter(exp_target, exp_delta)
-        except Exception as fast_err:
-            # Fallback to standard merge if binary append fails
-            tmp_target = exp_target + '.tmp_merge.zip'
+    # 1. Update local CBZ on PC (only if save_to_pc is True)
+    if save_to_pc:
+        os.makedirs(os.path.dirname(exp_target), exist_ok=True)
+        if not target_existed:
+            # Initial creation: copy delta directly to target
+            shutil.copyfile(exp_delta, exp_target)
+        else:
+            # True In-Place Binary Append (O(delta)) with safe fallback
             try:
-                with zipfile.ZipFile(exp_target, 'r') as zf_old, \
-                     zipfile.ZipFile(exp_delta, 'r') as zf_delta, \
-                     zipfile.ZipFile(tmp_target, 'w', compression=zipfile.ZIP_STORED) as zf_new:
+                binary_zip_append_filter(exp_target, exp_delta)
+            except Exception as fast_err:
+                # Fallback to standard merge if binary append fails
+                tmp_target = exp_target + '.tmp_merge.zip'
+                try:
+                    with zipfile.ZipFile(exp_target, 'r') as zf_old, \
+                         zipfile.ZipFile(exp_delta, 'r') as zf_delta, \
+                         zipfile.ZipFile(tmp_target, 'w', compression=zipfile.ZIP_STORED) as zf_new:
 
-                    delta_keys = set()
-                    for item in zf_delta.infolist():
-                        k = get_chapter_key(item.filename)
-                        if k and k not in ('comicinfo.xml', 'toc.ncx'):
-                            delta_keys.add(k)
+                        delta_keys = set()
+                        for item in zf_delta.infolist():
+                            k = get_chapter_key(item.filename)
+                            if k and k not in ('comicinfo.xml', 'toc.ncx'):
+                                delta_keys.add(k)
 
-                    seen_old_folders = {}
-                    for item in zf_old.infolist():
-                        if item.filename in ('ComicInfo.xml', 'toc.ncx'):
-                            continue
-                        k = get_chapter_key(item.filename)
-                        if k in delta_keys:
-                            continue
-                        folder_prefix = item.filename.split('/')[0] if '/' in item.filename else ''
-                        if k not in seen_old_folders:
-                            seen_old_folders[k] = folder_prefix
-                        if seen_old_folders[k] != folder_prefix:
-                            continue
-                        zf_new.writestr(item, zf_old.read(item.filename))
+                        seen_old_folders = {}
+                        for item in zf_old.infolist():
+                            if item.filename in ('ComicInfo.xml', 'toc.ncx'):
+                                continue
+                            k = get_chapter_key(item.filename)
+                            if k in delta_keys:
+                                continue
+                            folder_prefix = item.filename.split('/')[0] if '/' in item.filename else ''
+                            if k not in seen_old_folders:
+                                seen_old_folders[k] = folder_prefix
+                            if seen_old_folders[k] != folder_prefix:
+                                continue
+                            zf_new.writestr(item, zf_old.read(item.filename))
 
-                    for item in zf_delta.infolist():
-                        zf_new.writestr(item, zf_delta.read(item.filename))
+                        for item in zf_delta.infolist():
+                            zf_new.writestr(item, zf_delta.read(item.filename))
 
-                os.replace(tmp_target, exp_target)
-            except Exception as e:
-                if os.path.exists(tmp_target):
-                    os.remove(tmp_target)
-                return {'status': 'error', 'message': f'Failed to merge local volume: {str(e)}'}
+                    os.replace(tmp_target, exp_target)
+                except Exception as e:
+                    if os.path.exists(tmp_target):
+                        os.remove(tmp_target)
+                    return {'status': 'error', 'message': f'Failed to merge local volume: {str(e)}'}
 
     # 2. Sync to Kindle
     kindle_result = None
@@ -1292,20 +1293,21 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, auto_
             if check_manga_res and check_manga_res.returncode == 0 and check_manga_res.stdout.strip():
                 dest_dir = check_manga_res.stdout.strip()
 
-            kindle_result = scp_transfer(host, port, user, exp_target, dest_dir, password=password, key_path=key_path, force_overwrite=True)
+            file_to_send = exp_target if (save_to_pc and os.path.exists(exp_target)) else exp_delta
+            kindle_result = scp_transfer(host, port, user, file_to_send, dest_dir, password=password, key_path=key_path, force_overwrite=True)
         else:
             # Remote volume found! Incremental fast append:
             remote_target_path = found_remote_path
             ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
 
-            # Transfer small delta to Kindle /mnt/us/koreader/cache/delta_<timestamp>.zip (avoids tight rootfs /tmp limits)
-            remote_delta = f'/mnt/us/koreader/cache/delta_{int(os.path.getmtime(exp_target))}.zip'
+            # Transfer small delta to Kindle /mnt/us/koreader/cache/delta_<timestamp>.zip
+            remote_delta = f'/mnt/us/koreader/cache/delta_{int(time.time())}.zip'
             delta_transfer_cmd = [scp_bin] + auth_flags + [exp_delta, f'{user}@{host}:{remote_delta}']
             transfer_res = execute_with_auth(delta_transfer_cmd, password=password, key_path=key_path, timeout=60)
             if transfer_res.returncode != 0:
                 kindle_result = {'status': 'error', 'message': f'Failed to send delta to Kindle: {transfer_res.stderr}'}
             else:
-                # Execute merge on Kindle with generous timeout (large volumes take ~45-60s on Kindle eMMC)
+                # Execute merge on Kindle with generous timeout
                 merge_cmd = [ssh_bin] + ssh_auth_flags + [
                     f'{user}@{host}',
                     f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua '{remote_target_path}' '{remote_delta}'"
@@ -1336,8 +1338,230 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, auto_
     return {
         'status': 'success',
         'local_path': exp_target,
-        'action': 'merged' if target_existed else 'created',
+        'action': 'merged' if (save_to_pc and target_existed) else ('created' if save_to_pc else 'synced_kindle_only'),
         'kindle_result': kindle_result
+    }
+
+def delete_chapters_from_volume_py(volume_path, chapter_keys_to_delete):
+    """
+    Deletes specific chapters from a CBZ/ZIP volume on PC.
+    If all chapters are deleted, removes the volume file entirely.
+    Otherwise, rewrites the ZIP without the specified chapters.
+    """
+    exp_path = os.path.expanduser(volume_path)
+    if not os.path.exists(exp_path):
+        return {'status': 'not_found', 'deleted': 0}
+
+    keys_set = set(k.strip().lower() for k in chapter_keys_to_delete if k and k.strip())
+    tmp_path = exp_path + '.tmp_del.zip'
+
+    try:
+        deleted_count = 0
+        with zipfile.ZipFile(exp_path, 'r') as zf_in:
+            all_infolist = zf_in.infolist()
+
+            all_keys = set()
+            for item in all_infolist:
+                if item.filename.lower() not in ('comicinfo.xml', 'toc.ncx'):
+                    k = get_chapter_key(item.filename)
+                    if k and k != 'cover':
+                        all_keys.add(k.lower())
+
+            remaining_keys = all_keys - keys_set
+            if not remaining_keys:
+                zf_in.close()
+                os.remove(exp_path)
+                return {'status': 'success', 'action': 'volume_deleted', 'deleted': len(all_keys)}
+
+            with zipfile.ZipFile(tmp_path, 'w', compression=zipfile.ZIP_STORED) as zf_out:
+                for item in all_infolist:
+                    fn_lower = item.filename.lower()
+                    if fn_lower in ('comicinfo.xml', 'toc.ncx'):
+                        continue
+                    k = get_chapter_key(item.filename)
+                    if k and k.lower() in keys_set:
+                        deleted_count += 1
+                        continue
+                    zf_out.writestr(item, zf_in.read(item.filename))
+
+        os.replace(tmp_path, exp_path)
+        return {'status': 'success', 'action': 'chapters_deleted', 'deleted': deleted_count, 'remaining': len(remaining_keys)}
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        return {'status': 'error', 'message': str(e)}
+
+def delete_loose_chapters_local(folder_path, chapter_keys_to_delete, volume_path=None):
+    """
+    Deletes loose chapter archives/folders from folder_path that match chapter_keys_to_delete.
+    """
+    exp_folder = os.path.expanduser(folder_path)
+    if not os.path.isdir(exp_folder):
+        return 0
+
+    keys_set = set(k.strip().lower() for k in chapter_keys_to_delete if k and k.strip())
+    deleted = 0
+    exp_vol = os.path.abspath(os.path.expanduser(volume_path)) if volume_path else None
+
+    try:
+        for entry in os.listdir(exp_folder):
+            full_p = os.path.join(exp_folder, entry)
+            if exp_vol and os.path.abspath(full_p) == exp_vol:
+                continue
+            k = get_chapter_key(entry)
+            if k and k.lower() in keys_set:
+                if os.path.isfile(full_p):
+                    os.remove(full_p)
+                    deleted += 1
+                elif os.path.isdir(full_p):
+                    shutil.rmtree(full_p, ignore_errors=True)
+                    deleted += 1
+        cleanup_empty_dir(exp_folder)
+    except Exception:
+        pass
+    return deleted
+
+def delete_chapters(target='pc', local_folder='', volume_name='', remote_folder=None, remote_base=None, chapter_keys=None, host='kindle.local', port=2222, user='root', password=None, key_path=None):
+    """
+    Deletes specific chapters from PC and/or Kindle.
+    Supports both cumulative volume archives and individual chapter files.
+    """
+    if not chapter_keys:
+        return {'status': 'error', 'message': 'No chapter keys provided for deletion'}
+
+    keys_list = [k.strip().lower() for k in chapter_keys if k and k.strip()]
+    if not keys_list:
+        return {'status': 'error', 'message': 'Empty chapter keys'}
+
+    pc_res = None
+    kindle_res = None
+
+    # 1. Delete on PC
+    if target in ('pc', 'both'):
+        pc_deleted_from_volume = 0
+        pc_volume_action = None
+        pc_loose_deleted = 0
+
+        exp_local_dir = os.path.expanduser(local_folder) if local_folder else ''
+        base_name = os.path.splitext(volume_name)[0] if volume_name else ''
+        parent_local_dir = os.path.dirname(exp_local_dir) if exp_local_dir else ''
+
+        candidate_volumes = []
+        if exp_local_dir and volume_name:
+            candidate_volumes.extend([
+                os.path.join(exp_local_dir, volume_name),
+                os.path.join(exp_local_dir, f"{base_name}.cbz"),
+                os.path.join(exp_local_dir, f"{base_name}.zip"),
+                f"{exp_local_dir.rstrip('/')}.cbz",
+                f"{exp_local_dir.rstrip('/')}.zip",
+            ])
+        if parent_local_dir and volume_name:
+            candidate_volumes.extend([
+                os.path.join(parent_local_dir, volume_name),
+                os.path.join(parent_local_dir, f"{base_name}.cbz"),
+                os.path.join(parent_local_dir, f"{base_name}.zip")
+            ])
+
+        vol_path_found = None
+        for cand in candidate_volumes:
+            if os.path.exists(cand) and not os.path.isdir(cand):
+                vol_path_found = cand
+                break
+
+        if vol_path_found:
+            v_res = delete_chapters_from_volume_py(vol_path_found, keys_list)
+            pc_volume_action = v_res.get('action')
+            pc_deleted_from_volume = v_res.get('deleted', 0)
+
+        if exp_local_dir and os.path.isdir(exp_local_dir):
+            pc_loose_deleted = delete_loose_chapters_local(exp_local_dir, keys_list, volume_path=vol_path_found)
+
+        pc_res = {
+            'status': 'success',
+            'volume_action': pc_volume_action,
+            'deleted_from_volume': pc_deleted_from_volume,
+            'deleted_loose': pc_loose_deleted,
+            'total_deleted': pc_deleted_from_volume + pc_loose_deleted
+        }
+
+    # 2. Delete on Kindle
+    if target in ('kindle', 'both'):
+        if not host:
+            kindle_res = {'status': 'error', 'message': 'No Kindle host configured'}
+        else:
+            clean_remote = remote_folder.rstrip('/') if remote_folder else ''
+            clean_base = remote_base.rstrip('/') if remote_base else (os.path.dirname(clean_remote) if '/' in clean_remote else clean_remote)
+
+            # Ensure merge_volume.lua v3.1.0 on Kindle
+            ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
+
+            found_remote_path = find_remote_volume(
+                host, port, user,
+                volume_name=volume_name,
+                remote_folder=clean_remote,
+                remote_base=clean_base,
+                password=password,
+                key_path=key_path
+            )
+
+            ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+            ssh_auth_flags = [
+                '-o', 'ConnectTimeout=6',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-p', str(port)
+            ]
+
+            kindle_vol_res = None
+            if found_remote_path:
+                def esc_sh(val):
+                    return "'" + val.replace("'", "'\\''") + "'"
+
+                keys_sh = " ".join([esc_sh(k) for k in keys_list])
+                lua_del_cmd = [
+                    ssh_bin
+                ] + ssh_auth_flags + [
+                    f'{user}@{host}',
+                    f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --delete {esc_sh(found_remote_path)} {keys_sh}"
+                ]
+                res = execute_with_auth(lua_del_cmd, password=password, key_path=key_path, timeout=30)
+                if res and res.returncode == 0:
+                    out_lines = [l.strip() for l in res.stdout.splitlines() if l.strip().startswith('{')]
+                    if out_lines:
+                        try:
+                            kindle_vol_res = json.loads(out_lines[-1])
+                        except Exception:
+                            pass
+
+            # Also clean loose files on Kindle
+            if clean_remote:
+                loose_del_script = (
+                    f"if [ -d '{clean_remote}' ]; then "
+                    f"  for f in '{clean_remote}'/*; do "
+                    f"    if [ -f \"$f\" ]; then "
+                    f"      bf=$(basename \"$f\" | tr '[:upper:]' '[:lower:]'); "
+                    + "".join([f"      if echo \"$bf\" | grep -qi '{k}'; then rm -f \"$f\"; fi; " for k in keys_list[:30]]) +
+                    f"    fi; "
+                    f"  done; "
+                    f"  rmdir '{clean_remote}' 2>/dev/null || true; "
+                    f"fi"
+                )
+                loose_cmd = [ssh_bin] + ssh_auth_flags + [f'{user}@{host}', loose_del_script]
+                execute_with_auth(loose_cmd, password=password, key_path=key_path, timeout=10)
+
+            kindle_res = {
+                'status': 'success',
+                'volume_found': bool(found_remote_path),
+                'volume_result': kindle_vol_res
+            }
+
+    return {
+        'status': 'success',
+        'target': target,
+        'pc': pc_res,
+        'kindle': kindle_res
     }
 
 def main():
@@ -1430,12 +1654,35 @@ def main():
                 local_target_cbz = req.get('local_target_cbz', '')
                 delta_zip_path = req.get('delta_zip_path', '')
                 remote_folder = req.get('remote_folder', '')
+                save_to_pc = req.get('save_to_pc', True)
                 auto_transfer = req.get('auto_transfer', False)
                 result = append_to_volume(
                     local_target_cbz,
                     delta_zip_path,
                     remote_folder=remote_folder,
+                    save_to_pc=save_to_pc,
                     auto_transfer=auto_transfer,
+                    host=host,
+                    port=port,
+                    user=user,
+                    password=password,
+                    key_path=key_path
+                )
+                send_message(result)
+            elif action == 'delete_chapters':
+                target = req.get('target', 'pc')
+                local_folder = req.get('local_folder', '')
+                volume_name = req.get('volume_name', '')
+                remote_folder = req.get('remote_folder', '')
+                remote_base = req.get('remote_base', '')
+                chapter_keys = req.get('chapter_keys', [])
+                result = delete_chapters(
+                    target=target,
+                    local_folder=local_folder,
+                    volume_name=volume_name,
+                    remote_folder=remote_folder,
+                    remote_base=remote_base,
+                    chapter_keys=chapter_keys,
                     host=host,
                     port=port,
                     user=user,

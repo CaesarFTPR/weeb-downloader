@@ -144,10 +144,15 @@
           </button>
         </div>
 
-        <!-- Download Action Button -->
-        <button id="btn-download" class="btn btn-primary btn-block">
-          <span class="btn-icon">📥</span> <span id="btn-download-label">Download to PC & Kindle</span>
-        </button>
+        <!-- Main Actions Row (Download & Delete) -->
+        <div class="main-actions-row">
+          <button id="btn-download" class="btn btn-primary flex-1">
+            <span class="btn-icon">📥</span> <span id="btn-download-label">Download to PC & Kindle</span>
+          </button>
+          <button id="btn-delete-selected" class="btn btn-danger-outline" type="button" title="Delete selected chapters from PC or Kindle">
+            <span class="btn-icon">🗑️</span> <span id="btn-delete-label">Delete</span>
+          </button>
+        </div>
 
         <!-- Kindle SSH Transfer Action Row -->
         <div class="kindle-action-card compact">
@@ -343,6 +348,46 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <!-- Delete Confirmation Modal Dialog -->
+  <div id="delete-modal" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <span class="modal-title">🗑️ Delete Selected Chapters</span>
+        <button id="btn-close-delete-modal" class="btn-icon-close" type="button" title="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="delete-modal-summary" class="modal-summary">You have selected 0 chapters.</p>
+        <p class="modal-subtitle">Where would you like to delete them from?</p>
+        <div class="delete-targets-grid">
+          <button id="btn-confirm-delete-pc" class="btn-modal-target" type="button">
+            <span class="modal-target-icon">💻</span>
+            <div class="modal-target-info">
+              <span class="modal-target-title">Delete from PC</span>
+              <span class="modal-target-desc">Remove chapters from computer storage</span>
+            </div>
+          </button>
+          <button id="btn-confirm-delete-kindle" class="btn-modal-target" type="button">
+            <span class="modal-target-icon">📱</span>
+            <div class="modal-target-info">
+              <span class="modal-target-title">Delete from Kindle</span>
+              <span class="modal-target-desc">Remove chapters from KOReader volume</span>
+            </div>
+          </button>
+          <button id="btn-confirm-delete-both" class="btn-modal-target btn-modal-both" type="button">
+            <span class="modal-target-icon">💻📱</span>
+            <div class="modal-target-info">
+              <span class="modal-target-title">Delete from Both</span>
+              <span class="modal-target-desc">Completely remove from PC and Kindle</span>
+            </div>
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-cancel-delete" class="btn btn-secondary btn-sm" type="button">Cancel</button>
+      </div>
+    </div>
   </div>
 
   <!-- Main popup controller -->

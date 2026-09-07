@@ -200,6 +200,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(err => sendResponse({ success: false, error: err.message }));
     return true;
   }
+
+  if (request.action === 'DELETE_CHAPTERS') {
+    sendNativeMessage({
+      action: 'delete_chapters',
+      target: request.target,
+      local_folder: request.localFolder,
+      volume_name: request.volumeName,
+      remote_folder: request.remoteFolder,
+      remote_base: request.remoteBase,
+      chapter_keys: request.chapterKeys,
+      host: request.host,
+      port: request.port,
+      user: request.user,
+      password: request.password,
+      key_path: request.keyPath
+    })
+      .then(res => sendResponse({ success: true, result: res }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
 });
 
 /**
@@ -710,25 +730,49 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   let existingChaptersList = existingExists ? (existingInfo.chapters || []) : [];
   let existingPageCount = existingExists ? (existingInfo.page_count || 0) : 0;
 
-  // Build set of existing chapter keys
+  // Build set of existing chapter keys on PC
   const existingKeys = new Set(existingChaptersList.map(getChapterKey));
 
-  // Filter chapters to download: skip any chapters that already exist in the tome!
+  const saveToPc = Boolean(settings.saveToPc !== false);
+  const saveToKindle = Boolean(settings.saveToKindle !== false && settings.autoTransfer !== false);
+
+  // Load existing source tracking from storage (which chapters are already on PC / Kindle)
+  const sourcesKey = 'sources_' + manga.seriesId;
+  const storedSources = await chrome.storage.local.get(sourcesKey).catch(() => ({}));
+  const sourceMap = storedSources[sourcesKey] || {};
+
+  // Filter chapters to download based on requested target(s):
+  // - If saving only to Kindle: only skip if already present on Kindle
+  // - If saving only to PC: only skip if already present on PC (or in local volume)
+  // - If saving to both: only skip if present on both PC and Kindle
   const chaptersToDownload = [];
   const skippedChapters = [];
   for (const ch of chapters) {
     const key = getChapterKey(ch.name || `Chapter ${ch.chapterNumber}`);
-    if (existingKeys.has(key)) {
+    const onPc = existingKeys.has(key) || Boolean(sourceMap[ch.id]?.pc);
+    const onKindle = Boolean(sourceMap[ch.id]?.kindle);
+
+    let alreadyHas = false;
+    if (saveToPc && saveToKindle) {
+      alreadyHas = onPc && onKindle;
+    } else if (saveToPc) {
+      alreadyHas = onPc;
+    } else if (saveToKindle) {
+      alreadyHas = onKindle;
+    }
+
+    if (alreadyHas) {
       skippedChapters.push(ch);
     } else {
       chaptersToDownload.push(ch);
     }
   }
 
-  // If all selected chapters already exist in the volume:
-  if (existingExists && chaptersToDownload.length === 0) {
+  // If all selected chapters already exist on the target destination:
+  if (chaptersToDownload.length === 0) {
+    const targetDesc = (!saveToPc && saveToKindle) ? 'Kindle' : (saveToPc && !saveToKindle ? 'PC' : 'PC & Kindle');
     updateAndBroadcastProgress(
-      `All ${chapters.length} selected chapter(s) are already in ${volumeName}!`,
+      `All ${chapters.length} selected chapter(s) already exist on ${targetDesc}!`,
       100,
       { isCompleted: true }
     );
@@ -745,7 +789,7 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   }
 
   const deltaZip = new JSZip();
-  let globalPageCounter = existingPageCount;
+  let globalPageCounter = saveToPc ? existingPageCount : 0;
   const chapterBookmarks = [];
   const allPagesXml = [];
 
@@ -934,6 +978,7 @@ ${navPointsXml}
       local_target_cbz: localVolumePath,
       delta_zip_path: localDeltaPath,
       remote_folder: remoteFolder,
+      save_to_pc: Boolean(settings.saveToPc !== false),
       auto_transfer: Boolean(settings.saveToKindle !== false && settings.autoTransfer !== false),
       host: settings.sshHost,
       port: settings.sshPort,
@@ -947,9 +992,9 @@ ${navPointsXml}
       const kindleMsg = mergeRes.kindle_result?.message ? ` (${mergeRes.kindle_result.message})` : '';
 
       if (settings.saveToPc === false && mergeRes.kindle_result?.status === 'success') {
+        // Clean up temporary delta payload only; existing PC manga is untouched!
         try {
-          await sendNativeMessage({ action: 'delete_local_file', path: localVolumePath });
-          await sendNativeMessage({ action: 'cleanup_empty_dir', path: downloadPaths.desiredDir });
+          await sendNativeMessage({ action: 'delete_local_file', path: localDeltaPath });
         } catch (e) {}
         updateAndBroadcastProgress(`🎉 Synced directly to Kindle (${volumeName})!`, 100);
       } else if (settings.saveToKindle !== false) {

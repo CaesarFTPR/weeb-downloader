@@ -1,12 +1,13 @@
 --[[
   merge_volume.lua
-  -- version: 3.0.0
+  -- version: 3.1.0
   True In-Place Binary CBZ Volume Merger for Kindle KOReader using native LuaJIT & libc.
   Time Complexity: O(delta) - appends new chapters in ~0.15s without rewriting existing chapters.
 
   Usage:
     /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua <target_cbz> <delta_zip>
     /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect <target_cbz>
+    /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --delete <target_cbz> <key1> <key2> ...
 --]]
 
 local ffi = require("ffi")
@@ -247,6 +248,123 @@ if arg[1] == "--inspect" then
 
     io.write(string.format('{"status":"success","exists":true,"chapters":[%s],"chapter_keys":[%s],"total_pages":%d,"reading_progress":%s}\n',
         table.concat(json_folders, ","), table.concat(json_keys, ","), image_count, json_prog))
+    os.exit(0)
+end
+
+-- Delete mode: instant removal of specified chapter keys from Central Directory
+if arg[1] == "--delete" then
+    local target_cbz = arg[2]
+    if not target_cbz then
+        io.write('{"status":"error","message":"No volume path provided"}\n')
+        os.exit(1)
+    end
+
+    local del_keys = {}
+    for i = 3, #arg do
+        del_keys[arg[i]:lower()] = true
+    end
+
+    local fp = C.fopen(target_cbz, "r+b")
+    if fp == nil then
+        io.write('{"status":"error","message":"Target file not found"}\n')
+        os.exit(0)
+    end
+
+    local eocd = find_eocd(fp)
+    if not eocd then
+        C.fclose(fp)
+        io.write('{"status":"error","message":"Invalid or unreadable ZIP archive"}\n')
+        os.exit(1)
+    end
+
+    C.fseek(fp, eocd.cd_offset, 0)
+    local cd_buf = ffi.new("char[?]", eocd.cd_size)
+    local read_cd = tonumber(C.fread(cd_buf, 1, eocd.cd_size, fp))
+    if read_cd < eocd.cd_size then
+        C.fclose(fp)
+        io.write('{"status":"error","message":"Could not read Central Directory"}\n')
+        os.exit(1)
+    end
+
+    local cd_str = ffi.string(cd_buf, read_cd or 0)
+    local entries = parse_cd_entries(cd_str)
+
+    -- Determine unique chapters
+    local all_keys = {}
+    for _, e in ipairs(entries) do
+        local n_lower = e.name:lower()
+        if n_lower ~= "comicinfo.xml" and n_lower ~= "toc.ncx" then
+            local k = get_chapter_key(e.name)
+            if k and k ~= "cover" then
+                all_keys[k] = true
+            end
+        end
+    end
+
+    -- Check how many chapters remain
+    local remaining_count = 0
+    for k, _ in pairs(all_keys) do
+        if not del_keys[k] then
+            remaining_count = remaining_count + 1
+        end
+    end
+
+    if remaining_count == 0 then
+        -- All chapters are removed! Delete the volume file and .sdr directory
+        C.fclose(fp)
+        os.remove(target_cbz)
+        local base_no_ext = target_cbz:gsub("%.cbz$", ""):gsub("%.zip$", "")
+        local sdr_dir = base_no_ext .. ".sdr"
+        os.execute("rm -rf '" .. sdr_dir:gsub("'", "'\\''") .. "' '" .. target_cbz:gsub("'", "'\\''") .. "' 2>/dev/null")
+        io.write('{"status":"success","action":"volume_removed"}\n')
+        os.exit(0)
+    end
+
+    -- Filter CD entries
+    local kept_cd = {}
+    local deleted_entries_count = 0
+    for _, e in ipairs(entries) do
+        local n_lower = e.name:lower()
+        local should_delete = false
+        if n_lower ~= "comicinfo.xml" and n_lower ~= "toc.ncx" then
+            local k = get_chapter_key(e.name)
+            if k and del_keys[k] then
+                should_delete = true
+            end
+        end
+
+        if should_delete then
+            deleted_entries_count = deleted_entries_count + 1
+        else
+            kept_cd[#kept_cd + 1] = e.bytes
+        end
+    end
+
+    -- Write new Central Directory at eocd.cd_offset
+    C.fseek(fp, eocd.cd_offset, 0)
+    for _, b in ipairs(kept_cd) do
+        C.fwrite(b, 1, #b, fp)
+    end
+    local new_cd_size = tonumber(C.ftell(fp)) - eocd.cd_offset
+    local total_kept_entries = #kept_cd
+
+    -- Write new EOCD
+    local new_eocd = "PK\5\6" .. "\0\0\0\0" ..
+                     pack_u16(total_kept_entries) .. pack_u16(total_kept_entries) ..
+                     pack_u32(new_cd_size) .. pack_u32(eocd.cd_offset) .. "\0\0"
+    C.fwrite(new_eocd, 1, #new_eocd, fp)
+    C.fflush(fp)
+
+    local final_pos = tonumber(C.ftell(fp))
+    local fd = C.fileno(fp)
+    local trunc_ok = pcall(function() C.ftruncate(fd, final_pos) end)
+    if not trunc_ok then
+        os.execute(string.format("truncate -s %d %q 2>/dev/null", final_pos, target_cbz))
+    end
+    C.fclose(fp)
+
+    os.execute("touch '" .. target_cbz:gsub("'", "'\\''") .. "' 2>/dev/null")
+    io.write(string.format('{"status":"success","action":"chapters_deleted","deleted_entries":%d,"remaining_chapters":%d}\n', deleted_entries_count, remaining_count))
     os.exit(0)
 end
 

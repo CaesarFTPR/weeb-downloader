@@ -86,6 +86,17 @@ const elements = {
   btnCancelDownload: document.getElementById('btn-cancel-download'),
   btnDownload: document.getElementById('btn-download'),
   btnDownloadLabel: document.getElementById('btn-download-label'),
+  btnDeleteSelected: document.getElementById('btn-delete-selected'),
+  btnDeleteLabel: document.getElementById('btn-delete-label'),
+
+  // Delete Modal
+  deleteModal: document.getElementById('delete-modal'),
+  btnCloseDeleteModal: document.getElementById('btn-close-delete-modal'),
+  btnCancelDelete: document.getElementById('btn-cancel-delete'),
+  deleteModalSummary: document.getElementById('delete-modal-summary'),
+  btnConfirmDeletePc: document.getElementById('btn-confirm-delete-pc'),
+  btnConfirmDeleteKindle: document.getElementById('btn-confirm-delete-kindle'),
+  btnConfirmDeleteBoth: document.getElementById('btn-confirm-delete-both'),
 
   // Target Devices Selector
   targetSavePc: document.getElementById('target-save-pc'),
@@ -258,6 +269,33 @@ function setupEventListeners() {
   // Kindle Actions
   elements.btnTransferKindle.addEventListener('click', transferToKindle);
   elements.btnCopyScp.addEventListener('click', copyScpCommand);
+
+  // Delete Actions
+  if (elements.btnDeleteSelected) {
+    elements.btnDeleteSelected.addEventListener('click', openDeleteModal);
+  }
+  if (elements.btnCloseDeleteModal) {
+    elements.btnCloseDeleteModal.addEventListener('click', closeDeleteModal);
+  }
+  if (elements.btnCancelDelete) {
+    elements.btnCancelDelete.addEventListener('click', closeDeleteModal);
+  }
+  if (elements.deleteModal) {
+    elements.deleteModal.addEventListener('click', (e) => {
+      if (e.target === elements.deleteModal) {
+        closeDeleteModal();
+      }
+    });
+  }
+  if (elements.btnConfirmDeletePc) {
+    elements.btnConfirmDeletePc.addEventListener('click', () => executeDeleteChapters('pc'));
+  }
+  if (elements.btnConfirmDeleteKindle) {
+    elements.btnConfirmDeleteKindle.addEventListener('click', () => executeDeleteChapters('kindle'));
+  }
+  if (elements.btnConfirmDeleteBoth) {
+    elements.btnConfirmDeleteBoth.addEventListener('click', () => executeDeleteChapters('both'));
+  }
 
   // Settings Actions
   if (elements.btnBrowseDestination) {
@@ -435,12 +473,14 @@ function updateTargetDeviceUI() {
   }
 
   if (elements.btnDownloadLabel) {
+    const count = selectedChapterIds.size;
+    const countSuffix = count > 0 ? ` (${count})` : '';
     if (savePc && saveKindle) {
-      elements.btnDownloadLabel.textContent = 'Download to PC & Kindle';
+      elements.btnDownloadLabel.textContent = `Download to PC & Kindle${countSuffix}`;
     } else if (savePc) {
-      elements.btnDownloadLabel.textContent = 'Download to PC';
+      elements.btnDownloadLabel.textContent = `Download to PC${countSuffix}`;
     } else if (saveKindle) {
-      elements.btnDownloadLabel.textContent = 'Download to Kindle';
+      elements.btnDownloadLabel.textContent = `Download to Kindle${countSuffix}`;
     }
   }
 
@@ -1266,9 +1306,166 @@ function saveSelectionToSession() {
 function updateSelectionBadge() {
   const count = selectedChapterIds.size;
   elements.selectionCountBadge.textContent = `${count} selected`;
-  elements.btnDownload.innerHTML = `<span class="btn-icon">📥</span> Download Selected (${count})`;
+
+  const savePc = elements.targetSavePc ? elements.targetSavePc.checked : true;
+  const saveKindle = elements.targetSaveKindle ? elements.targetSaveKindle.checked : true;
+  let targetLabel = 'to PC & Kindle';
+  if (savePc && !saveKindle) targetLabel = 'to PC';
+  else if (!savePc && saveKindle) targetLabel = 'to Kindle';
+
+  elements.btnDownload.innerHTML = `<span class="btn-icon">📥</span> <span id="btn-download-label">Download ${targetLabel} (${count})</span>`;
   elements.btnDownload.disabled = count === 0 || isDownloading;
+
+  if (elements.btnDeleteLabel) {
+    elements.btnDeleteLabel.textContent = count > 0 ? `Delete (${count})` : 'Delete';
+  }
+  if (elements.btnDeleteSelected) {
+    elements.btnDeleteSelected.disabled = count === 0 || isDownloading;
+  }
+
   saveSelectionToSession();
+}
+
+/**
+ * Open Delete Chapters Confirmation Modal
+ */
+function openDeleteModal() {
+  if (selectedChapterIds.size === 0) {
+    showBanner('Please select at least one chapter to delete.', 'info');
+    return;
+  }
+  const selectedChapters = allChapters.filter(c => selectedChapterIds.has(c.id));
+  const count = selectedChapters.length;
+
+  let summary = '';
+  if (count <= 3) {
+    summary = selectedChapters.map(c => c.name || `Ch. ${c.chapterNumber}`).join(', ');
+  } else {
+    const firstTwo = selectedChapters.slice(0, 2).map(c => c.name || `Ch. ${c.chapterNumber}`).join(', ');
+    const lastOne = selectedChapters[count - 1].name || `Ch. ${selectedChapters[count - 1].chapterNumber}`;
+    summary = `${firstTwo} ... ${lastOne}`;
+  }
+
+  if (elements.deleteModalSummary) {
+    elements.deleteModalSummary.textContent = `Selected ${count} chapter(s): ${summary}`;
+  }
+
+  const savePc = elements.targetSavePc ? elements.targetSavePc.checked : true;
+  const saveKindle = elements.targetSaveKindle ? elements.targetSaveKindle.checked : true;
+
+  if (elements.btnConfirmDeletePc) {
+    elements.btnConfirmDeletePc.classList.toggle('highlight', savePc && !saveKindle);
+  }
+  if (elements.btnConfirmDeleteKindle) {
+    elements.btnConfirmDeleteKindle.classList.toggle('highlight', !savePc && saveKindle);
+  }
+  if (elements.btnConfirmDeleteBoth) {
+    elements.btnConfirmDeleteBoth.classList.toggle('highlight', savePc && saveKindle);
+  }
+
+  if (elements.deleteModal) {
+    elements.deleteModal.classList.remove('hidden');
+  }
+}
+
+/**
+ * Close Delete Chapters Confirmation Modal
+ */
+function closeDeleteModal() {
+  if (elements.deleteModal) {
+    elements.deleteModal.classList.add('hidden');
+  }
+}
+
+/**
+ * Execute Chapter Deletion from PC, Kindle, or Both
+ */
+async function executeDeleteChapters(target) {
+  if (selectedChapterIds.size === 0 || !currentManga) {
+    closeDeleteModal();
+    return;
+  }
+
+  const selectedChapters = allChapters.filter(c => selectedChapterIds.has(c.id));
+  const count = selectedChapters.length;
+  const chapterKeys = selectedChapters.map(c => getChapterKey(c.name || `Chapter ${c.chapterNumber}`));
+
+  if (elements.btnConfirmDeletePc) elements.btnConfirmDeletePc.disabled = true;
+  if (elements.btnConfirmDeleteKindle) elements.btnConfirmDeleteKindle.disabled = true;
+  if (elements.btnConfirmDeleteBoth) elements.btnConfirmDeleteBoth.disabled = true;
+
+  const targetUpper = target === 'pc' ? 'PC' : (target === 'kindle' ? 'Kindle' : 'PC & Kindle');
+  if (elements.deleteModalSummary) {
+    elements.deleteModalSummary.textContent = `Deleting ${count} chapter(s) from ${targetUpper}...`;
+  }
+
+  try {
+    let targetFolder = currentSettings.folderName || '{title}';
+    targetFolder = targetFolder.replace('{title}', currentManga.title).trim();
+    targetFolder = sanitizeFilename(targetFolder);
+
+    const localBase = (currentSettings.localDownloads || '~/Downloads').replace(/\/+$/, '');
+    const localFullPath = `${localBase}/${targetFolder}`;
+    const cleanRemoteBase = (currentSettings.remotePath || '/mnt/us/koreader/').replace(/\/+$/, '');
+    const remoteFullPath = `${cleanRemoteBase}/${targetFolder}`;
+    const volumeName = `${sanitizeFilename(currentManga.title)}.cbz`;
+
+    const res = await chrome.runtime.sendMessage({
+      action: 'DELETE_CHAPTERS',
+      target: target,
+      localFolder: localFullPath,
+      volumeName: volumeName,
+      remoteFolder: remoteFullPath,
+      remoteBase: cleanRemoteBase,
+      chapterKeys: chapterKeys,
+      host: currentSettings.sshHost || 'kindle.local',
+      port: currentSettings.sshPort || 2222,
+      user: currentSettings.sshUser || 'root',
+      password: currentSettings.sshPassword || '',
+      keyPath: currentSettings.sshKeyPath || ''
+    });
+
+    if (res && res.success && res.result && res.result.status === 'success') {
+      selectedChapters.forEach(ch => {
+        const src = chapterSourceMap.get(ch.id) || { pc: false, kindle: false };
+        if (target === 'pc' || target === 'both') {
+          src.pc = false;
+        }
+        if (target === 'kindle' || target === 'both') {
+          src.kindle = false;
+        }
+        if (!src.pc && !src.kindle) {
+          downloadedChapterIds.delete(ch.id);
+          chapterSourceMap.delete(ch.id);
+        } else {
+          chapterSourceMap.set(ch.id, src);
+        }
+      });
+
+      const storageKey = 'downloaded_' + currentManga.seriesId;
+      const sourcesKey = 'sources_' + currentManga.seriesId;
+      await chrome.storage.local.set({
+        [storageKey]: Array.from(downloadedChapterIds),
+        [sourcesKey]: Object.fromEntries(chapterSourceMap)
+      });
+
+      selectedChapterIds.clear();
+      updateSelectionBadge();
+      renderChapterList();
+
+      showBanner(`🗑️ Successfully deleted ${count} chapter(s) from ${targetUpper}!`, 'success');
+    } else {
+      const errMsg = res?.error || res?.result?.message || 'Deletion failed';
+      showBanner(`❌ Failed to delete chapters: ${errMsg}`, 'error');
+    }
+  } catch (err) {
+    showBanner(`❌ Deletion error: ${err.message}`, 'error');
+  } finally {
+    if (elements.btnConfirmDeletePc) elements.btnConfirmDeletePc.disabled = false;
+    if (elements.btnConfirmDeleteKindle) elements.btnConfirmDeleteKindle.disabled = false;
+    if (elements.btnConfirmDeleteBoth) elements.btnConfirmDeleteBoth.disabled = false;
+    closeDeleteModal();
+  }
 }
 
 /**
