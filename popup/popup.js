@@ -19,7 +19,7 @@ const DEFAULT_SETTINGS = {
   sshKeyPath: '',
   remotePath: '/mnt/us/koreader/',
   localDownloads: '~/Downloads',
-  autoTransfer: false,
+  autoTransfer: true,
   saveToPc: true,
   saveToKindle: true,
   skipExisting: true
@@ -640,9 +640,9 @@ async function saveSettings() {
     sshKeyPath: elements.settingSshKeyPath.value.trim(),
     remotePath: elements.settingRemotePath.value.trim() || '/mnt/us/koreader/',
     localDownloads: elements.settingLocalDownloads.value.trim() || '~/Downloads',
-    autoTransfer: elements.settingAutoTransfer.checked,
+    autoTransfer: elements.settingAutoTransfer ? elements.settingAutoTransfer.checked : (elements.targetSaveKindle ? elements.targetSaveKindle.checked : true),
     saveToPc: elements.targetSavePc ? elements.targetSavePc.checked : true,
-    saveToKindle: elements.targetSaveKindle ? elements.targetSaveKindle.checked : true
+    saveToKindle: elements.settingAutoTransfer ? elements.settingAutoTransfer.checked : (elements.targetSaveKindle ? elements.targetSaveKindle.checked : true)
   };
 
   try {
@@ -882,20 +882,24 @@ async function scanArchivesAndMarkChapters(manualTrigger = false) {
       const data = res.result;
       const pcKeys = new Set(data.pc?.chapter_keys || []);
       const kindleKeys = new Set(data.kindle?.chapter_keys || []);
-      const allFoundKeys = new Set(data.all_chapter_keys || []);
+      const kindleChecked = data.kindle?.connected !== false;
 
       let matchedCount = 0;
       allChapters.forEach(ch => {
         const keyByName = getChapterKey(ch.name);
         const keyByNum = ch.chapterNumber !== null ? `ch_${Number.isInteger(ch.chapterNumber) ? ch.chapterNumber : ch.chapterNumber}` : '';
         const hasPc = pcKeys.has(keyByName) || (keyByNum && pcKeys.has(keyByNum));
-        const hasKindle = kindleKeys.has(keyByName) || (keyByNum && kindleKeys.has(keyByNum));
-        const hasAny = hasPc || hasKindle || allFoundKeys.has(keyByName) || (keyByNum && allFoundKeys.has(keyByNum));
+        const hasKindle = kindleChecked
+          ? (kindleKeys.has(keyByName) || (keyByNum && kindleKeys.has(keyByNum)))
+          : Boolean(chapterSourceMap.get(ch.id)?.kindle);
 
-        if (hasAny) {
+        if (hasPc || hasKindle) {
           downloadedChapterIds.add(ch.id);
           chapterSourceMap.set(ch.id, { pc: Boolean(hasPc), kindle: Boolean(hasKindle) });
           matchedCount++;
+        } else if (kindleChecked) {
+          downloadedChapterIds.delete(ch.id);
+          chapterSourceMap.delete(ch.id);
         }
       });
 
@@ -953,21 +957,41 @@ async function scanArchivesAndMarkChapters(manualTrigger = false) {
   }
 }
 
-async function markChapterAsDownloaded(seriesId, chapterId) {
+async function markChapterAsDownloaded(seriesId, chapterId, sources = { pc: true, kindle: false }) {
   downloadedChapterIds.add(chapterId);
+  const prev = chapterSourceMap.get(chapterId) || {};
+  chapterSourceMap.set(chapterId, {
+    pc: sources.pc !== undefined ? Boolean(sources.pc || prev.pc) : Boolean(prev.pc),
+    kindle: sources.kindle !== undefined ? Boolean(sources.kindle || prev.kindle) : Boolean(prev.kindle)
+  });
   try {
     const key = 'downloaded_' + seriesId;
-    await chrome.storage.local.set({ [key]: Array.from(downloadedChapterIds) });
+    const srcKey = 'sources_' + seriesId;
+    await chrome.storage.local.set({
+      [key]: Array.from(downloadedChapterIds),
+      [srcKey]: Object.fromEntries(chapterSourceMap)
+    });
   } catch (e) {
     console.warn('Could not save downloaded chapter:', e);
   }
 }
 
-async function markMultipleChaptersAsDownloaded(seriesId, chapterIds) {
-  chapterIds.forEach(id => downloadedChapterIds.add(id));
+async function markMultipleChaptersAsDownloaded(seriesId, chapterIds, sources = { pc: true, kindle: false }) {
+  chapterIds.forEach(id => {
+    downloadedChapterIds.add(id);
+    const prev = chapterSourceMap.get(id) || {};
+    chapterSourceMap.set(id, {
+      pc: sources.pc !== undefined ? Boolean(sources.pc || prev.pc) : Boolean(prev.pc),
+      kindle: sources.kindle !== undefined ? Boolean(sources.kindle || prev.kindle) : Boolean(prev.kindle)
+    });
+  });
   try {
     const key = 'downloaded_' + seriesId;
-    await chrome.storage.local.set({ [key]: Array.from(downloadedChapterIds) });
+    const srcKey = 'sources_' + seriesId;
+    await chrome.storage.local.set({
+      [key]: Array.from(downloadedChapterIds),
+      [srcKey]: Object.fromEntries(chapterSourceMap)
+    });
   } catch (e) {
     console.warn('Could not save downloaded chapters:', e);
   }
@@ -1112,9 +1136,12 @@ function renderChapterList() {
       } else if (src && src.kindle) {
         badge.textContent = 'Kindle';
         badge.title = 'Saved in archive on Kindle';
-      } else {
+      } else if (src && src.pc) {
         badge.textContent = 'PC';
         badge.title = 'Saved on PC';
+      } else {
+        badge.textContent = 'Done';
+        badge.title = 'Downloaded';
       }
       metaRight.appendChild(badge);
     }

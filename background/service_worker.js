@@ -400,7 +400,7 @@ async function handleStartDownloadPipeline(payload) {
         const displayBase = downloadPaths.desiredDir.replace(/^\/Users\/[^/]+/, '~');
 
         // Check if Kindle sync was requested
-        const saveToKindle = Boolean(settings.saveToKindle !== false && settings.autoTransfer);
+        const saveToKindle = Boolean(settings.saveToKindle !== false);
         const saveToPc = Boolean(settings.saveToPc !== false);
 
         if (saveToKindle && transferQueue.totalEnqueued > 0) {
@@ -624,7 +624,7 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
       }
 
       // STREAMING TRANSFER: Send this chapter to Kindle immediately while next chapter downloads!
-      if (settings.autoTransfer && transferQueue) {
+      if (Boolean(settings.saveToKindle !== false) && transferQueue) {
         const remoteFolder = `${settings.remotePath.replace(/\/+$/, '')}/${downloadState.targetFolder}/`;
         const realFilename = finalLocalFilePath.split(/[/\\]/).pop() || `${cleanChapterName}.${format}`;
         transferQueue.enqueue({
@@ -672,7 +672,7 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
           }
         }
 
-        if (settings.autoTransfer && transferQueue) {
+        if (Boolean(settings.saveToKindle !== false) && transferQueue) {
           const remoteFolder = `${settings.remotePath.replace(/\/+$/, '')}/${downloadState.targetFolder}/`;
           transferQueue.enqueue({
             localFilePath: finalLocalFolderPath,
@@ -734,7 +734,7 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   const existingKeys = new Set(existingChaptersList.map(getChapterKey));
 
   const saveToPc = Boolean(settings.saveToPc !== false);
-  const saveToKindle = Boolean(settings.saveToKindle !== false && settings.autoTransfer !== false);
+  const saveToKindle = Boolean(settings.saveToKindle !== false);
 
   // Load existing source tracking from storage (which chapters are already on PC / Kindle)
   const sourcesKey = 'sources_' + manga.seriesId;
@@ -776,7 +776,12 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
       100,
       { isCompleted: true }
     );
-    await markMultipleChaptersAsDownloaded(manga.seriesId, chapters.map(c => c.id));
+    for (const ch of chapters) {
+      const key = getChapterKey(ch.name || `Chapter ${ch.chapterNumber}`);
+      const onPc = existingKeys.has(key) || Boolean(sourceMap[ch.id]?.pc);
+      const onKindle = Boolean(sourceMap[ch.id]?.kindle);
+      await markChapterAsDownloaded(manga.seriesId, ch.id, { pc: onPc, kindle: onKindle });
+    }
     downloadState.completedChapters = chapters.map(c => c.id);
     return;
   }
@@ -978,8 +983,8 @@ ${navPointsXml}
       local_target_cbz: localVolumePath,
       delta_zip_path: localDeltaPath,
       remote_folder: remoteFolder,
-      save_to_pc: Boolean(settings.saveToPc !== false),
-      auto_transfer: Boolean(settings.saveToKindle !== false && settings.autoTransfer !== false),
+      save_to_pc: saveToPc,
+      auto_transfer: saveToKindle,
       host: settings.sshHost,
       port: settings.sshPort,
       user: settings.sshUser,
@@ -987,32 +992,48 @@ ${navPointsXml}
       key_path: settings.sshKeyPath
     });
 
+    const pcSuccess = Boolean(saveToPc && mergeRes && mergeRes.status === 'success');
+    const kindleSuccess = Boolean(saveToKindle && mergeRes && mergeRes.kindle_result?.status === 'success');
+
     if (mergeRes && mergeRes.status === 'success') {
       const actionDesc = mergeRes.action === 'merged' ? 'Appended to' : 'Created';
       const kindleMsg = mergeRes.kindle_result?.message ? ` (${mergeRes.kindle_result.message})` : '';
 
-      if (settings.saveToPc === false && mergeRes.kindle_result?.status === 'success') {
-        // Clean up temporary delta payload only; existing PC manga is untouched!
-        try {
-          await sendNativeMessage({ action: 'delete_local_file', path: localDeltaPath });
-        } catch (e) {}
+      if (!saveToPc && kindleSuccess) {
         updateAndBroadcastProgress(`🎉 Synced directly to Kindle (${volumeName})!`, 100);
-      } else if (settings.saveToKindle !== false) {
+      } else if (!saveToPc && !kindleSuccess) {
+        const errDetail = mergeRes.kindle_result?.message || 'Kindle sync failed';
+        updateAndBroadcastProgress(`⚠️ Kindle sync failed: ${errDetail}`, 100, { error: errDetail });
+      } else if (saveToKindle && !kindleSuccess) {
+        const errDetail = mergeRes.kindle_result?.message || 'Kindle sync failed';
+        updateAndBroadcastProgress(`Saved to PC, but Kindle sync failed: ${errDetail}`, 100, { error: errDetail });
+      } else if (saveToKindle) {
         updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName}!${kindleMsg}`, 100);
       } else {
         updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName} on PC!`, 100);
       }
     } else {
       console.warn('[WeebDownloader] Merge warning:', mergeRes);
-      updateAndBroadcastProgress(`Tome updated locally (${volumeName})`, 100);
+      updateAndBroadcastProgress(`Tome update failed: ${mergeRes?.message || 'Native host error'}`, 100, { error: mergeRes?.message });
+    }
+
+    if (pcSuccess || kindleSuccess) {
+      await markMultipleChaptersAsDownloaded(manga.seriesId, chapters.map(c => c.id), {
+        pc: pcSuccess,
+        kindle: kindleSuccess
+      });
+      downloadState.completedChapters = chapters.map(c => c.id);
     }
   } catch (err) {
     console.error('[WeebDownloader] Native merge error:', err);
-    updateAndBroadcastProgress(`Tome saved (${volumeName})`, 100);
+    updateAndBroadcastProgress(`Merge error: ${err.message}`, 100, { error: err.message });
+  } finally {
+    if (!saveToPc && localDeltaPath) {
+      try {
+        await sendNativeMessage({ action: 'delete_local_file', path: localDeltaPath });
+      } catch (e) {}
+    }
   }
-
-  await markMultipleChaptersAsDownloaded(manga.seriesId, chapters.map(c => c.id));
-  downloadState.completedChapters = chapters.map(c => c.id);
 }
 
 /**
@@ -1049,10 +1070,16 @@ async function autoScanArchivesAfterDownload(manga, chaptersList, settings, targ
     if (res && res.status === 'success') {
       const pcKeys = new Set(res.pc?.chapter_keys || []);
       const kindleKeys = new Set(res.kindle?.chapter_keys || []);
-      const allFoundKeys = new Set(res.all_chapter_keys || []);
+      const kindleChecked = res.kindle?.connected !== false;
 
-      const downloadedIds = [];
-      const sourceMap = {};
+      const storageKey = 'downloaded_' + manga.seriesId;
+      const sourcesKey = 'sources_' + manga.seriesId;
+      const readingKey = 'reading_' + manga.seriesId;
+
+      const existing = await chrome.storage.local.get([storageKey, sourcesKey]);
+      const prevSources = existing[sourcesKey] || {};
+      const downloadedSet = new Set(existing[storageKey] || []);
+      const sourceMap = { ...prevSources };
 
       chaptersList.forEach(ch => {
         const keyByName = getChapterKey(ch.name);
@@ -1060,26 +1087,22 @@ async function autoScanArchivesAfterDownload(manga, chaptersList, settings, targ
           ? `ch_${Number.isInteger(ch.chapterNumber) ? ch.chapterNumber : ch.chapterNumber}`
           : '';
         const hasPc = pcKeys.has(keyByName) || (keyByNum && pcKeys.has(keyByNum));
-        const hasKindle = kindleKeys.has(keyByName) || (keyByNum && kindleKeys.has(keyByNum));
-        const hasAny = hasPc || hasKindle || allFoundKeys.has(keyByName) || (keyByNum && allFoundKeys.has(keyByNum));
+        const hasKindle = kindleChecked
+          ? (kindleKeys.has(keyByName) || (keyByNum && kindleKeys.has(keyByNum)))
+          : Boolean(prevSources[ch.id]?.kindle);
 
-        if (hasAny) {
-          downloadedIds.push(ch.id);
+        if (hasPc || hasKindle) {
+          downloadedSet.add(ch.id);
           sourceMap[ch.id] = { pc: Boolean(hasPc), kindle: Boolean(hasKindle) };
+        } else if (kindleChecked) {
+          downloadedSet.delete(ch.id);
+          delete sourceMap[ch.id];
         }
       });
 
-      const storageKey = 'downloaded_' + manga.seriesId;
-      const sourcesKey = 'sources_' + manga.seriesId;
-      const readingKey = 'reading_' + manga.seriesId;
-
-      const existing = await chrome.storage.local.get([storageKey, sourcesKey]);
-      const mergedDownloaded = Array.from(new Set([...(existing[storageKey] || []), ...downloadedIds]));
-      const mergedSources = { ...(existing[sourcesKey] || {}), ...sourceMap };
-
       const updates = {
-        [storageKey]: mergedDownloaded,
-        [sourcesKey]: mergedSources
+        [storageKey]: Array.from(downloadedSet),
+        [sourcesKey]: sourceMap
       };
       if (res.kindle?.reading_progress) {
         updates[readingKey] = res.kindle.reading_progress;
@@ -1494,27 +1517,53 @@ function saveUrlToFile(url, filename) {
 /**
  * Mark chapter as downloaded in chrome.storage.local
  */
-async function markChapterAsDownloaded(seriesId, chapterId) {
+async function markChapterAsDownloaded(seriesId, chapterId, sources = { pc: true, kindle: false }) {
   if (!seriesId) return;
   try {
     const key = 'downloaded_' + seriesId;
-    const stored = await chrome.storage.local.get(key);
+    const srcKey = 'sources_' + seriesId;
+    const stored = await chrome.storage.local.get([key, srcKey]);
     const existing = new Set(stored[key] || []);
     existing.add(chapterId);
-    await chrome.storage.local.set({ [key]: Array.from(existing) });
+
+    const sourceMap = stored[srcKey] || {};
+    const prev = sourceMap[chapterId] || {};
+    sourceMap[chapterId] = {
+      pc: sources.pc !== undefined ? Boolean(sources.pc || prev.pc) : Boolean(prev.pc),
+      kindle: sources.kindle !== undefined ? Boolean(sources.kindle || prev.kindle) : Boolean(prev.kindle)
+    };
+
+    await chrome.storage.local.set({
+      [key]: Array.from(existing),
+      [srcKey]: sourceMap
+    });
   } catch (e) {
     console.warn('[WeebDownloader] Error saving downloaded chapter:', e);
   }
 }
 
-async function markMultipleChaptersAsDownloaded(seriesId, chapterIds) {
-  if (!seriesId) return;
+async function markMultipleChaptersAsDownloaded(seriesId, chapterIds, sources = { pc: true, kindle: false }) {
+  if (!seriesId || !chapterIds || chapterIds.length === 0) return;
   try {
     const key = 'downloaded_' + seriesId;
-    const stored = await chrome.storage.local.get(key);
+    const srcKey = 'sources_' + seriesId;
+    const stored = await chrome.storage.local.get([key, srcKey]);
     const existing = new Set(stored[key] || []);
     chapterIds.forEach(id => existing.add(id));
-    await chrome.storage.local.set({ [key]: Array.from(existing) });
+
+    const sourceMap = stored[srcKey] || {};
+    chapterIds.forEach(id => {
+      const prev = sourceMap[id] || {};
+      sourceMap[id] = {
+        pc: sources.pc !== undefined ? Boolean(sources.pc || prev.pc) : Boolean(prev.pc),
+        kindle: sources.kindle !== undefined ? Boolean(sources.kindle || prev.kindle) : Boolean(prev.kindle)
+      };
+    });
+
+    await chrome.storage.local.set({
+      [key]: Array.from(existing),
+      [srcKey]: sourceMap
+    });
   } catch (e) {
     console.warn('[WeebDownloader] Error saving downloaded chapters:', e);
   }

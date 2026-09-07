@@ -1293,8 +1293,23 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
             if check_manga_res and check_manga_res.returncode == 0 and check_manga_res.stdout.strip():
                 dest_dir = check_manga_res.stdout.strip()
 
-            file_to_send = exp_target if (save_to_pc and os.path.exists(exp_target)) else exp_delta
-            kindle_result = scp_transfer(host, port, user, file_to_send, dest_dir, password=password, key_path=key_path, force_overwrite=True)
+            if save_to_pc and os.path.exists(exp_target):
+                file_to_send = exp_target
+                temp_send_file = None
+            else:
+                # Ensure the file sent to Kindle has the proper volume name (not delta_*.zip)
+                temp_send_file = os.path.join(os.path.dirname(exp_delta), filename)
+                shutil.copyfile(exp_delta, temp_send_file)
+                file_to_send = temp_send_file
+
+            try:
+                kindle_result = scp_transfer(host, port, user, file_to_send, dest_dir, password=password, key_path=key_path, force_overwrite=True)
+            finally:
+                if temp_send_file and os.path.exists(temp_send_file):
+                    try:
+                        os.remove(temp_send_file)
+                    except Exception:
+                        pass
         else:
             # Remote volume found! Incremental fast append:
             remote_target_path = found_remote_path
