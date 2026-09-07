@@ -1,0 +1,1437 @@
+#!/usr/bin/env python3
+"""
+Chrome Native Messaging Host for WeebCentral Kindle Downloader
+Handles SSH testing and SCP file transfer to Kindle devices.
+Supports login without password (empty password / blank password on Kindle),
+SSH key authentication, and custom password authentication.
+"""
+
+import sys
+import json
+import struct
+import subprocess
+import os
+import shutil
+import tempfile
+import tarfile
+import zipfile
+import re
+import xml.etree.ElementTree as ET
+
+def send_message(msg):
+    """Send JSON message to Chrome with 4-byte length prefix."""
+    encoded = json.dumps(msg).encode('utf-8')
+    sys.stdout.buffer.write(struct.pack('@I', len(encoded)))
+    sys.stdout.buffer.write(encoded)
+    sys.stdout.buffer.flush()
+
+def read_message():
+    """Read JSON message from Chrome with 4-byte length prefix."""
+    raw_length = sys.stdin.buffer.read(4)
+    if not raw_length or len(raw_length) < 4:
+        return None
+    length = struct.unpack('@I', raw_length)[0]
+    raw_msg = sys.stdin.buffer.read(length).decode('utf-8')
+    return json.loads(raw_msg)
+
+def execute_with_auth(base_cmd, password=None, key_path=None, timeout=None):
+    """
+    Execute SSH or SCP command with stdin=subprocess.DEVNULL.
+    When no password is provided, OpenSSH automatically sends an empty password,
+    which authenticates successfully with Kindle "login without password".
+    """
+    env = os.environ.copy()
+    askpass_path = None
+    cmd = list(base_cmd)
+
+    if key_path:
+        expanded_key = os.path.expanduser(key_path)
+        if os.path.exists(expanded_key):
+            cmd.extend(['-i', expanded_key])
+
+    if password:
+        fd, askpass_path = tempfile.mkstemp(prefix='kindle_askpass_', suffix='.sh')
+        with os.fdopen(fd, 'w') as f:
+            f.write('#!/bin/sh\necho "$KINDLE_SSH_PASS"\n')
+        os.chmod(askpass_path, 0o700)
+        env['SSH_ASKPASS'] = askpass_path
+        env['SSH_ASKPASS_REQUIRE'] = 'force'
+        env['DISPLAY'] = 'dummy:0'
+        env['KINDLE_SSH_PASS'] = password
+        cmd.extend(['-o', 'PreferredAuthentications=password,keyboard-interactive,publickey'])
+
+    try:
+        # Crucial: stdin=subprocess.DEVNULL allows empty password without tty error
+        res = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout
+        )
+        return res
+    finally:
+        if askpass_path and os.path.exists(askpass_path):
+            try:
+                os.remove(askpass_path)
+            except Exception:
+                pass
+
+def test_ssh(host, port, user, password=None, key_path=None):
+    """Test SSH connectivity to Kindle."""
+    ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+    cmd = [
+        ssh_bin,
+        '-o', 'ConnectTimeout=6',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-p', str(port),
+        f'{user}@{host}',
+        'echo KINDLE_OK'
+    ]
+    try:
+        res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=10)
+        if res.returncode == 0 and 'KINDLE_OK' in res.stdout:
+            return {
+                'status': 'success',
+                'message': f'Connected to Kindle ({user}@{host}:{port})!'
+            }
+
+        # Fallback check for kindle.local if configured IP failed
+        if host != 'kindle.local':
+            alt_cmd = [
+                ssh_bin,
+                '-o', 'ConnectTimeout=3',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-p', str(port),
+                f'{user}@kindle.local',
+                'echo KINDLE_OK'
+            ]
+            alt_res = execute_with_auth(alt_cmd, password=password, key_path=key_path, timeout=5)
+            if alt_res and alt_res.returncode == 0 and 'KINDLE_OK' in alt_res.stdout:
+                return {
+                    'status': 'success',
+                    'message': f'Connected via kindle.local! (Configured {host} failed - you can change Host to kindle.local)'
+                }
+
+        err = res.stderr.strip() or res.stdout.strip() or f'Exit code {res.returncode}'
+        if 'timed out' in err.lower() or 'no route to host' in err.lower() or 'connection refused' in err.lower():
+            return {
+                'status': 'error',
+                'message': f'Kindle unreachable ({host}:{port}). Wake up your Kindle and ensure Wi-Fi is connected!'
+            }
+        return {
+            'status': 'error',
+            'message': f'SSH connection failed: {err}'
+        }
+    except subprocess.TimeoutExpired:
+        if host != 'kindle.local':
+            try:
+                alt_cmd = [ssh_bin, '-o', 'ConnectTimeout=3', '-o', 'StrictHostKeyChecking=accept-new', '-p', str(port), f'{user}@kindle.local', 'echo KINDLE_OK']
+                alt_res = execute_with_auth(alt_cmd, password=password, key_path=key_path, timeout=5)
+                if alt_res and alt_res.returncode == 0 and 'KINDLE_OK' in alt_res.stdout:
+                    return {'status': 'success', 'message': f'Connected via kindle.local! (Configured {host} timed out)'}
+            except Exception:
+                pass
+        return {'status': 'error', 'message': f'Connection to {host}:{port} timed out (Kindle is likely asleep).'}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+def get_remote_files(host, port, user, remote_folder, password=None, key_path=None):
+    """Query list of files already present on Kindle in remote_folder without creating directories."""
+    clean_folder = remote_folder.rstrip('/')
+    ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+    cmd = [
+        ssh_bin,
+        '-o', 'ConnectTimeout=5',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-p', str(port),
+        f'{user}@{host}',
+        f"if [ -d '{clean_folder}' ]; then ls -1 '{clean_folder}' 2>/dev/null; else echo '__NO_DIR__'; fi"
+    ]
+    try:
+        res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=10)
+        if res and res.returncode == 0:
+            lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+            if lines and lines[0] == '__NO_DIR__':
+                return None
+            return set(lines)
+    except Exception:
+        pass
+    return None
+
+def scp_transfer(host, port, user, local_path, remote_path, password=None, key_path=None, force_overwrite=False):
+    """
+    Transfer folder or single file to Kindle via SCP with smart incremental sync.
+    Supports:
+    - Single file (e.g. streaming transfer right after chapter download)
+    - Full directory (e.g. manual bulk transfer)
+    """
+    expanded_local = os.path.expanduser(local_path)
+    clean_remote = remote_path if remote_path.endswith('/') else remote_path + '/'
+    base_name = os.path.basename(expanded_local.rstrip('/'))
+
+    # Fallback: if .cbz was requested but .zip exists on disk (or vice versa), use existing archive
+    if not os.path.exists(expanded_local):
+        if expanded_local.endswith('.cbz'):
+            alt = expanded_local[:-4] + '.zip'
+            if os.path.exists(alt):
+                expanded_local = alt
+                base_name = os.path.basename(expanded_local)
+        elif expanded_local.endswith('.zip'):
+            alt = expanded_local[:-4] + '.cbz'
+            if os.path.exists(alt):
+                expanded_local = alt
+                base_name = os.path.basename(expanded_local)
+
+    # Smart Cumulative Tome Detection:
+    # If local path is a directory containing a cumulative tome ({base_name}.cbz or {base_name}.zip),
+    # switch directly to single file mode so no redundant subfolders are created on Kindle!
+    if os.path.exists(expanded_local) and os.path.isdir(expanded_local):
+        candidate_tomes = [
+            os.path.join(expanded_local, f"{base_name}.cbz"),
+            os.path.join(expanded_local, f"{base_name}.zip")
+        ]
+        try:
+            items = [f for f in os.listdir(expanded_local) if (f.lower().endswith('.cbz') or f.lower().endswith('.zip')) and not f.startswith('.')]
+            if len(items) == 1:
+                candidate_tomes.append(os.path.join(expanded_local, items[0]))
+        except Exception:
+            pass
+
+        for ct in candidate_tomes:
+            if os.path.isfile(ct):
+                expanded_local = ct
+                base_name = os.path.basename(expanded_local)
+                break
+
+    if not os.path.exists(expanded_local):
+        return {
+            'status': 'error',
+            'message': f'Local path does not exist: {expanded_local}'
+        }
+
+    is_file = os.path.isfile(expanded_local)
+    is_dir = os.path.isdir(expanded_local)
+
+    if not is_file and not is_dir:
+        return {
+            'status': 'error',
+            'message': f'Local path is neither a file nor a directory: {expanded_local}'
+        }
+
+    tmp_path = os.path.join('/tmp', base_name)
+    in_tmp = (os.path.abspath(expanded_local) == os.path.abspath(tmp_path))
+    source_to_use = expanded_local
+    used_tmp = False
+
+    if not in_tmp:
+        # 1. Clean up stale tmp_path if left from previous runs
+        if os.path.exists(tmp_path):
+            if os.path.isdir(tmp_path):
+                shutil.rmtree(tmp_path, ignore_errors=True)
+            else:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+        # 2. Stage via Finder to /tmp (bypasses macOS TCC on ~/Downloads)
+        finder_script = f'''
+tell application "Finder"
+    set src to POSIX file "{expanded_local}" as alias
+    set dst to POSIX file "/tmp" as alias
+    duplicate src to dst with replacing
+end tell
+'''
+        try:
+            finder_res = subprocess.run(
+                ['osascript', '-e', finder_script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30
+            )
+            if finder_res.returncode == 0 and os.path.exists(tmp_path):
+                source_to_use = tmp_path
+                used_tmp = True
+        except Exception:
+            pass
+
+    scp_bin = shutil.which('scp') or '/usr/bin/scp'
+    ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+    auth_flags = [
+        '-o', 'ConnectTimeout=10',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-P', str(port)
+    ]
+    if key_path:
+        expanded_key = os.path.expanduser(key_path)
+        if os.path.exists(expanded_key):
+            auth_flags.extend(['-i', expanded_key])
+
+    if is_file:
+        # Single File Mode:
+        # Check where this file already exists on Kindle to update it in place without extra subfolders
+        existing_remote = find_remote_volume(
+            host, port, user,
+            volume_name=base_name,
+            remote_folder=clean_remote,
+            remote_base=os.path.dirname(clean_remote.rstrip('/')),
+            password=password,
+            key_path=key_path
+        )
+
+        if existing_remote:
+            remote_folder = os.path.dirname(existing_remote)
+            clean_remote = remote_folder + '/'
+            remote_dest_item = existing_remote
+        else:
+            # If not yet on Kindle, check if clean_remote/manga or /mnt/us/koreader/manga exists
+            remote_folder = clean_remote.rstrip('/')
+            check_manga_dir_cmd = [
+                ssh_bin,
+                '-o', 'ConnectTimeout=4',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-p', str(port),
+                f'{user}@{host}',
+                f"if [ -d '{remote_folder}/manga' ]; then echo '{remote_folder}/manga'; elif [ -d '/mnt/us/koreader/manga' ]; then echo '/mnt/us/koreader/manga'; else echo '{remote_folder}'; fi"
+            ]
+            check_res = execute_with_auth(check_manga_dir_cmd, password=password, key_path=key_path, timeout=5)
+            if check_res and check_res.returncode == 0 and check_res.stdout.strip():
+                remote_folder = check_res.stdout.strip()
+                clean_remote = remote_folder + '/'
+            remote_dest_item = f"{clean_remote}{base_name}"
+
+        # Clean up any dummy empty directory or accidental duplicate subfolder on Kindle
+        stem_name = os.path.splitext(base_name)[0]
+        unwanted_subfolder = f"{clean_remote}{stem_name}"
+        cleanup_cmd = [
+            ssh_bin,
+            '-o', 'ConnectTimeout=6',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-p', str(port),
+            f'{user}@{host}',
+            f"mkdir -p '{remote_folder}' && rmdir '{remote_dest_item}' 2>/dev/null || true; if [ -d '{unwanted_subfolder}' ]; then rm -rf '{unwanted_subfolder}' 2>/dev/null || true; fi"
+        ]
+        execute_with_auth(cleanup_cmd, password=password, key_path=key_path, timeout=12)
+
+        remote_files = get_remote_files(host, port, user, remote_folder, password=password, key_path=key_path)
+
+        if not force_overwrite and remote_files is not None and base_name in remote_files:
+            return {
+                'status': 'success',
+                'message': f'{base_name} is already up-to-date on Kindle!'
+            }
+
+        cmd = [scp_bin] + auth_flags + [source_to_use, f'{user}@{host}:{clean_remote}']
+
+        try:
+            res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=120)
+            if res.returncode == 0:
+                # Invalidate KOReader page count cache
+                touch_cmd = [
+                    ssh_bin,
+                    '-o', 'ConnectTimeout=4',
+                    '-o', 'StrictHostKeyChecking=accept-new',
+                    '-p', str(port),
+                    f'{user}@{host}',
+                    f"touch '{remote_dest_item}' 2>/dev/null || true"
+                ]
+                execute_with_auth(touch_cmd, password=password, key_path=key_path, timeout=5)
+
+                return {
+                    'status': 'success',
+                    'message': f'Transferred {base_name} to Kindle ({user}@{host}:{clean_remote})!'
+                }
+            else:
+                err = res.stderr.strip() or res.stdout.strip() or f'Exit code {res.returncode}'
+                if 'timed out' in err.lower() or 'no route to host' in err.lower() or 'connection refused' in err.lower() or 'operation timed out' in err.lower():
+                    return {
+                        'status': 'error',
+                        'message': f'Kindle unreachable ({host}:{port}). Wake up your Kindle and ensure Wi-Fi is connected!'
+                    }
+                return {'status': 'error', 'message': f'Transfer failed: {err}'}
+        except subprocess.TimeoutExpired:
+            return {'status': 'error', 'message': f'Transfer of {base_name} timed out after 120s.'}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+        finally:
+            if used_tmp and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+    elif is_dir:
+        # Directory Mode:
+        remote_target_folder = f'{clean_remote}{base_name}'
+
+        # Clean up any leftover empty dummy directories (.cbz/ or .zip/) from previous failed transfers
+        cleanup_cmd = [
+            ssh_bin,
+            '-o', 'ConnectTimeout=6',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-p', str(port),
+            f'{user}@{host}',
+            f"mkdir -p '{remote_target_folder}' && rmdir '{remote_target_folder}'/*.cbz '{remote_target_folder}'/*.zip 2>/dev/null || true"
+        ]
+        execute_with_auth(cleanup_cmd, password=password, key_path=key_path, timeout=12)
+
+        remote_files = get_remote_files(host, port, user, remote_target_folder, password=password, key_path=key_path)
+        files_sent_count = 0
+
+        if used_tmp and os.path.isdir(tmp_path) and remote_files is not None:
+            local_items = os.listdir(tmp_path)
+            for f in local_items:
+                if f.startswith('.') or f.endswith('.sdr'):
+                    try:
+                        p = os.path.join(tmp_path, f)
+                        if os.path.isdir(p):
+                            shutil.rmtree(p, ignore_errors=True)
+                        else:
+                            os.remove(p)
+                    except Exception:
+                        pass
+                elif f in remote_files:
+                    try:
+                        p = os.path.join(tmp_path, f)
+                        if os.path.isdir(p):
+                            shutil.rmtree(p, ignore_errors=True)
+                        else:
+                            os.remove(p)
+                    except Exception:
+                        pass
+
+            remaining_items = [f for f in os.listdir(tmp_path) if not f.startswith('.')]
+            if len(remaining_items) == 0:
+                return {
+                    'status': 'success',
+                    'message': 'All files are already up-to-date on Kindle! Nothing to transfer.'
+                }
+            files_sent_count = len(remaining_items)
+
+        cmd = [scp_bin, '-r'] + auth_flags + [source_to_use, f'{user}@{host}:{clean_remote}']
+
+        try:
+            res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=180)
+            if res.returncode == 0:
+                count_msg = f' ({files_sent_count} new file{"s" if files_sent_count > 1 else ""})' if files_sent_count > 0 else ''
+                return {
+                    'status': 'success',
+                    'message': f'Transferred successfully to Kindle{count_msg} ({user}@{host}:{clean_remote})!'
+                }
+            else:
+                err = res.stderr.strip() or res.stdout.strip() or f'Exit code {res.returncode}'
+                if 'timed out' in err.lower() or 'no route to host' in err.lower() or 'connection refused' in err.lower() or 'operation timed out' in err.lower():
+                    return {
+                        'status': 'error',
+                        'message': f'Kindle unreachable ({host}:{port}). Make sure Kindle is awake with Wi-Fi ON!'
+                    }
+                if 'operation not permitted' in err.lower():
+                    return {
+                        'status': 'error',
+                        'message': 'macOS blocked reading ~/Downloads. Grant Google Chrome access to Downloads in System Settings -> Privacy & Security -> Files and Folders -> Google Chrome, or use the "Copy Command" button.'
+                    }
+                return {
+                    'status': 'error',
+                    'message': f'Transfer failed: {err}'
+                }
+        except subprocess.TimeoutExpired:
+            return {'status': 'error', 'message': 'Transfer timed out after 180s.'}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+        finally:
+            if used_tmp and os.path.exists(tmp_path):
+                try:
+                    if os.path.isdir(tmp_path):
+                        shutil.rmtree(tmp_path, ignore_errors=True)
+                    else:
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+
+def get_folder_files(folder_path):
+    """List filenames in folder using Finder (bypasses macOS TCC on ~/Downloads)."""
+    expanded = os.path.expanduser(folder_path)
+    script = f'''
+tell application "Finder"
+    try
+        set f to POSIX file "{expanded}" as alias
+        set file_names to name of every item of folder f
+        return file_names
+    on error
+        return ""
+    end try
+end tell
+'''
+    try:
+        res = subprocess.run(['osascript', '-e', script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        if res.returncode == 0 and res.stdout.strip():
+            return [f.strip() for f in res.stdout.strip().split(',') if f.strip()]
+    except Exception:
+        pass
+    return []
+
+def choose_folder_dialog(prompt="Select download folder for manga:"):
+    """
+    Open native macOS folder picker dialog using AppleScript.
+    Returns absolute POSIX path or None if cancelled.
+    """
+    script = f'''
+tell application "System Events"
+    activate
+end tell
+try
+    set chosen to choose folder with prompt "{prompt}"
+    return POSIX path of chosen
+on error
+    return ""
+end try
+'''
+    try:
+        res = subprocess.run(
+            ['osascript', '-e', script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip().rstrip('/')
+    except Exception as e:
+        sys.stderr.write(f"choose_folder_dialog error: {e}\n")
+    return None
+
+def relocate_file(source_path, dest_dir):
+    """
+    Move a file or directory from source_path to dest_dir.
+    Creates dest_dir if it doesn't exist.
+    Returns dict with status and new path.
+    """
+    try:
+        exp_src = os.path.expanduser(source_path)
+        exp_dest_dir = os.path.expanduser(dest_dir)
+
+        if not os.path.exists(exp_src):
+            return {'status': 'error', 'message': f'Source file does not exist: {exp_src}'}
+
+        os.makedirs(exp_dest_dir, exist_ok=True)
+        filename = os.path.basename(exp_src.rstrip('/'))
+        target_path = os.path.join(exp_dest_dir, filename)
+
+        # If source and destination are already the exact same path
+        if os.path.abspath(exp_src) == os.path.abspath(target_path):
+            return {'status': 'success', 'new_path': exp_src}
+
+        # If target already exists, remove it first to overwrite
+        if os.path.exists(target_path):
+            if os.path.isdir(target_path):
+                shutil.rmtree(target_path, ignore_errors=True)
+            else:
+                os.remove(target_path)
+
+        src_parent = os.path.dirname(exp_src)
+
+        shutil.move(exp_src, target_path)
+
+        # Clean up empty staging or parent directory left behind in ~/Downloads
+        downloads_dir = os.path.expanduser('~/Downloads')
+        if os.path.isdir(src_parent) and os.path.abspath(src_parent) != os.path.abspath(downloads_dir):
+            try:
+                ds_store = os.path.join(src_parent, '.DS_Store')
+                if os.path.exists(ds_store):
+                    os.remove(ds_store)
+                if len(os.listdir(src_parent)) == 0:
+                    os.rmdir(src_parent)
+            except Exception:
+                pass
+
+        return {'status': 'success', 'new_path': target_path}
+    except Exception as e:
+        return {'status': 'error', 'message': f'Failed to relocate file: {str(e)}'}
+
+def cleanup_empty_dir(folder_path):
+    """Remove directory if it is empty (ignoring .DS_Store). Will never delete ~/Downloads itself."""
+    try:
+        exp = os.path.expanduser(folder_path)
+        downloads_dir = os.path.expanduser('~/Downloads')
+        if os.path.isdir(exp) and os.path.abspath(exp) != os.path.abspath(downloads_dir):
+            ds_store = os.path.join(exp, '.DS_Store')
+            if os.path.exists(ds_store):
+                os.remove(ds_store)
+            if len(os.listdir(exp)) == 0:
+                os.rmdir(exp)
+                return True
+    except Exception:
+        pass
+    return False
+
+def get_chapter_key(path):
+    s = path.lower()
+    first = path.split('/')[0] if '/' in path else path
+    first_lower = first.lower()
+    if 'cover' in first_lower or 'обложк' in first_lower:
+        return 'cover'
+    m = re.search(r'(?:chapter|ch\.?|глава)\s*([\d.]+)', first_lower) or re.search(r'(\d+(?:\.\d+)?)', first_lower)
+    if m:
+        try:
+            return f"ch_{float(m.group(1)):g}"
+        except Exception:
+            pass
+    return re.sub(r'^\d+[\._\-]\s*', '', first_lower).strip()
+
+def inspect_volume(volume_path):
+    """
+    Inspect an existing CBZ/ZIP volume to determine existing chapters and page count.
+    """
+    exp_path = os.path.expanduser(volume_path)
+    if not os.path.exists(exp_path):
+        return {
+            'status': 'success',
+            'exists': False,
+            'page_count': 0,
+            'chapters': [],
+            'chapter_keys': []
+        }
+
+    try:
+        with zipfile.ZipFile(exp_path, 'r') as zf:
+            namelist = zf.namelist()
+            folders = set()
+            images = []
+            for name in namelist:
+                parts = name.split('/')
+                if len(parts) > 1 and parts[0]:
+                    folders.add(parts[0])
+                ext = os.path.splitext(name)[1].lower()
+                if ext in ('.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'):
+                    images.append(name)
+
+            sorted_folders = sorted(list(folders))
+            chapter_keys = [get_chapter_key(f) for f in sorted_folders if get_chapter_key(f) != 'cover']
+            comic_info = None
+            if 'ComicInfo.xml' in namelist:
+                try:
+                    xml_data = zf.read('ComicInfo.xml')
+                    root = ET.fromstring(xml_data)
+                    comic_info = {
+                        'title': root.findtext('Title'),
+                        'series': root.findtext('Series'),
+                        'number': root.findtext('Number'),
+                        'page_count': root.findtext('PageCount')
+                    }
+                except Exception:
+                    pass
+
+            return {
+                'status': 'success',
+                'exists': True,
+                'page_count': len(images),
+                'chapters': sorted_folders,
+                'chapter_keys': chapter_keys,
+                'comic_info': comic_info
+            }
+    except Exception as e:
+        return {'status': 'error', 'message': f'Failed to inspect volume: {str(e)}'}
+
+def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
+    """
+    Ensure /mnt/us/koreader/merge_volume.lua exists and is up to date on Kindle.
+    Deploys it via SCP if missing or outdated.
+    """
+    ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+    scp_bin = shutil.which('scp') or '/usr/bin/scp'
+    lua_local = os.path.join(os.path.dirname(__file__), 'merge_volume.lua')
+    if not os.path.exists(lua_local):
+        return False
+
+    check_cmd = [
+        ssh_bin,
+        '-o', 'ConnectTimeout=4',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-p', str(port),
+        f'{user}@{host}',
+        "if grep -q -- 'version: 3.0.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+    ]
+    check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
+    if not check_res or check_res.returncode != 0:
+        return False
+
+    if 'OK' not in check_res.stdout:
+        auth_flags = [
+            '-o', 'ConnectTimeout=5',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-P', str(port)
+        ]
+        deploy_cmd = [scp_bin] + auth_flags + [lua_local, f'{user}@{host}:/mnt/us/koreader/merge_volume.lua']
+        deploy_res = execute_with_auth(deploy_cmd, password=password, key_path=key_path, timeout=10)
+        return bool(deploy_res and deploy_res.returncode == 0)
+
+    return True
+
+def find_remote_volume(host, port, user, volume_name, remote_folder=None, remote_base=None, password=None, key_path=None):
+    """
+    Search for a cumulative volume on Kindle across:
+    1. clean_remote and clean_remote/manga
+    2. clean_base and clean_base/manga
+    3. /mnt/us/koreader/manga, /mnt/us/koreader, /mnt/us/manga, /mnt/us
+    4. Fallback fast find command
+    Returns the absolute path to the file on Kindle, or None if not found.
+    """
+    if not volume_name or not host:
+        return None
+
+    clean_remote = remote_folder.rstrip('/') if remote_folder else ''
+    clean_base = remote_base.rstrip('/') if remote_base else (os.path.dirname(clean_remote) if '/' in clean_remote else clean_remote)
+    base_name = os.path.splitext(volume_name)[0]
+
+    bases = []
+    if clean_remote:
+        bases.append(clean_remote)
+        bases.append(f"{clean_remote}/manga")
+    if clean_base:
+        bases.append(f"{clean_base}/manga")
+        bases.append(clean_base)
+    bases.extend([
+        '/mnt/us/koreader/manga',
+        '/mnt/us/koreader',
+        '/mnt/us/manga',
+        '/mnt/us'
+    ])
+
+    seen = set()
+    unique_bases = []
+    for b in bases:
+        b_norm = b.rstrip('/')
+        if b_norm and b_norm not in seen:
+            seen.add(b_norm)
+            unique_bases.append(b_norm)
+
+    # Also search subfolders named after the manga in each base
+    subfolder_bases = [f"{b}/{base_name}" for b in list(unique_bases)]
+    for sb in subfolder_bases:
+        sb_norm = sb.rstrip('/')
+        if sb_norm and sb_norm not in seen:
+            seen.add(sb_norm)
+            unique_bases.append(sb_norm)
+
+    candidate_names = [volume_name]
+    if f"{base_name}.cbz" not in candidate_names:
+        candidate_names.append(f"{base_name}.cbz")
+    if f"{base_name}.zip" not in candidate_names:
+        candidate_names.append(f"{base_name}.zip")
+
+    candidate_paths = []
+    for b in unique_bases:
+        for name in candidate_names:
+            p = f"{b}/{name}"
+            if p not in candidate_paths:
+                candidate_paths.append(p)
+
+    def escape_single_quotes(val):
+        return val.replace("'", "'\\''")
+
+    ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+    check_steps = [f"if [ -f '{escape_single_quotes(p)}' ]; then echo '{escape_single_quotes(p)}'; exit 0; fi" for p in candidate_paths]
+    find_patterns = " -o ".join([f"-name '{escape_single_quotes(name)}'" for name in candidate_names])
+    fallback_find = f"find /mnt/us/koreader /mnt/us/manga /mnt/us -maxdepth 4 \\( {find_patterns} \\) -type f 2>/dev/null | head -n 1"
+
+    full_script = "; ".join(check_steps) + "; " + fallback_find
+    cmd = [
+        ssh_bin,
+        '-o', 'ConnectTimeout=4',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-p', str(port),
+        f'{user}@{host}',
+        full_script
+    ]
+    res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=8)
+    if res and res.returncode == 0:
+        lines = [l.strip() for l in res.stdout.splitlines() if l.strip()]
+        if lines:
+            return lines[0]
+    return None
+
+def inspect_remote_volume(host, port, user, remote_cbz_path, password=None, key_path=None):
+    """
+    Inspects a remote CBZ/ZIP volume on Kindle over SSH.
+    Tries /mnt/us/koreader/merge_volume.lua --inspect first, then falls back to unzip -l.
+    """
+    ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+    clean_path = remote_cbz_path.replace("'", "'\\''")
+
+    # Fast connectivity & Lua helper verification
+    ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
+
+    cmd = (
+        f"if [ -f '{clean_path}' ]; then "
+        f"  export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect '{clean_path}' 2>/dev/null || unzip -l '{clean_path}' 2>/dev/null; "
+        f"else "
+        f"  echo '__NOT_FOUND__'; "
+        f"fi"
+    )
+    base_cmd = [
+        ssh_bin,
+        '-o', 'ConnectTimeout=4',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-p', str(port),
+        f'{user}@{host}',
+        cmd
+    ]
+    res = execute_with_auth(base_cmd, password=password, key_path=key_path, timeout=8)
+    if not res or res.returncode != 0:
+        return {'status': 'error', 'connected': False, 'message': 'Kindle unreachable or SSH failed'}
+
+    out = res.stdout.strip()
+    if '__NOT_FOUND__' in out:
+        return {'status': 'success', 'connected': True, 'exists': False, 'chapters': [], 'chapter_keys': []}
+
+    # Try JSON parse from merge_volume.lua
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith('{') and line.endswith('}'):
+            try:
+                data = json.loads(line)
+                if data.get('status') == 'success':
+                    data['connected'] = True
+                    return data
+            except Exception:
+                pass
+
+    # Fallback parse from unzip -l
+    folders = set()
+    for line in out.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 4:
+            entry_path = parts[-1]
+            if '/' in entry_path:
+                folder = entry_path.split('/')[0]
+                if folder:
+                    folders.add(folder)
+            else:
+                k = get_chapter_key(entry_path)
+                if k and k not in ('cover', 'comicinfo.xml', 'toc.ncx'):
+                    folders.add(entry_path)
+
+    sorted_folders = sorted(list(folders))
+    chapter_keys = [get_chapter_key(f) for f in sorted_folders if get_chapter_key(f) != 'cover']
+    return {
+        'status': 'success',
+        'connected': True,
+        'exists': True,
+        'chapters': sorted_folders,
+        'chapter_keys': chapter_keys
+    }
+
+def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=None, host='kindle.local', port=2222, user='root', password=None, key_path=None):
+    """
+    Scans both local PC and Kindle for cumulative archives and loose chapter files.
+    Returns combined chapter keys and individual breakdown.
+    """
+    pc_keys = set()
+    pc_volume_found = False
+    pc_volume_path = None
+    pc_chapters = []
+
+    # 1. Inspect PC local folder and volume
+    exp_local_dir = os.path.expanduser(local_folder)
+    base_name = os.path.splitext(volume_name)[0]
+    parent_local_dir = os.path.dirname(exp_local_dir)
+    candidate_volumes = [
+        os.path.join(exp_local_dir, volume_name),
+        os.path.join(exp_local_dir, f"{base_name}.cbz"),
+        os.path.join(exp_local_dir, f"{base_name}.zip"),
+        f"{exp_local_dir.rstrip('/')}.cbz",
+        f"{exp_local_dir.rstrip('/')}.zip",
+        os.path.join(parent_local_dir, volume_name),
+        os.path.join(parent_local_dir, f"{base_name}.cbz"),
+        os.path.join(parent_local_dir, f"{base_name}.zip")
+    ]
+
+    for cand in candidate_volumes:
+        if os.path.exists(cand) and not os.path.isdir(cand):
+            pc_volume_found = True
+            pc_volume_path = cand
+            vol_res = inspect_volume(cand)
+            if vol_res.get('status') == 'success':
+                for k in vol_res.get('chapter_keys', []):
+                    pc_keys.add(k)
+                pc_chapters = vol_res.get('chapters', [])
+            break
+
+    # Also inspect loose files in PC directory
+    if os.path.exists(exp_local_dir) and os.path.isdir(exp_local_dir):
+        try:
+            for f in os.listdir(exp_local_dir):
+                full_f = os.path.join(exp_local_dir, f)
+                if os.path.isfile(full_f) and (f.lower().endswith('.cbz') or f.lower().endswith('.zip')):
+                    if pc_volume_path and os.path.abspath(full_f) == os.path.abspath(pc_volume_path):
+                        continue
+                    k = get_chapter_key(f)
+                    if k and k not in ('cover', 'comicinfo.xml', 'toc.ncx'):
+                        pc_keys.add(k)
+        except Exception:
+            pass
+
+    # 2. Inspect Kindle remote folder and volume
+    kindle_keys = set()
+    kindle_connected = False
+    kindle_volume_found = False
+    kindle_volume_path = None
+    kindle_error = None
+    kindle_reading_progress = None
+
+    if host:
+        ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+        clean_remote = remote_folder.rstrip('/') if remote_folder else ''
+        clean_base = remote_base.rstrip('/') if remote_base else (os.path.dirname(clean_remote) if '/' in clean_remote else clean_remote)
+
+        def esc_sh(val):
+            return "'" + val.replace("'", "'\\''") + "'"
+
+        # Build candidate paths across common Kindle directories
+        bases = []
+        if clean_remote:
+            bases.append(clean_remote)
+            bases.append(f"{clean_remote}/manga")
+        if clean_base:
+            bases.append(f"{clean_base}/manga")
+            bases.append(clean_base)
+        bases.extend([
+            '/mnt/us/koreader/manga',
+            '/mnt/us/koreader',
+            '/mnt/us/manga',
+            '/mnt/us'
+        ])
+
+        seen = set()
+        unique_bases = []
+        for b in bases:
+            b_norm = b.rstrip('/')
+            if b_norm and b_norm not in seen:
+                seen.add(b_norm)
+                unique_bases.append(b_norm)
+
+        candidate_names = [volume_name]
+        if f"{base_name}.cbz" not in candidate_names:
+            candidate_names.append(f"{base_name}.cbz")
+        if f"{base_name}.zip" not in candidate_names:
+            candidate_names.append(f"{base_name}.zip")
+
+        candidate_paths = []
+        for b in unique_bases:
+            for name in candidate_names:
+                p = f"{b}/{name}"
+                if p not in candidate_paths:
+                    candidate_paths.append(p)
+
+        folders_to_clean = []
+        if clean_remote and clean_remote not in ('/mnt/us', '/mnt/us/koreader', '/mnt/us/koreader/manga', '/mnt/us/manga'):
+            folders_to_clean.append(clean_remote)
+        if clean_base and f"{clean_base}/{base_name}" not in folders_to_clean and f"{clean_base}/{base_name}" not in ('/mnt/us', '/mnt/us/koreader', '/mnt/us/koreader/manga', '/mnt/us/manga'):
+            folders_to_clean.append(f"{clean_base}/{base_name}")
+
+        cand_sh_list = " ".join([esc_sh(p) for p in candidate_paths])
+        find_sh_patterns = " -o ".join([f"-iname {esc_sh(name)}" for name in candidate_names])
+        cleanup_sh_list = " ".join([esc_sh(d) for d in folders_to_clean])
+
+        loose_sh = ""
+        if clean_remote and clean_remote != clean_base:
+            loose_sh = f"if [ -d {esc_sh(clean_remote)} ]; then echo '__LOOSE__'; ls -1 {esc_sh(clean_remote)} 2>/dev/null; fi; "
+
+        cleanup_sh = ""
+        if cleanup_sh_list:
+            cleanup_sh = f"for d in {cleanup_sh_list}; do if [ -d \"$d\" ]; then rmdir \"$d\" 2>/dev/null || true; fi; done; "
+
+        unified_script = (
+            f"VOL=\"\"; "
+            f"for p in {cand_sh_list}; do if [ -f \"$p\" ]; then VOL=\"$p\"; break; fi; done; "
+            f"if [ -z \"$VOL\" ]; then VOL=$(find /mnt/us/koreader /mnt/us/manga /mnt/us -maxdepth 4 \\( {find_sh_patterns} \\) -type f 2>/dev/null | head -n 1); fi; "
+            f"{loose_sh}"
+            f"{cleanup_sh}"
+            f"if [ -n \"$VOL\" ]; then "
+            f"  echo \"__VOL__:$VOL\"; "
+            f"  if grep -q -- 'version: 2.2.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then "
+            f"    echo '__INSPECT__'; "
+            f"    export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect \"$VOL\" 2>/dev/null || unzip -l \"$VOL\" 2>/dev/null; "
+            f"  else "
+            f"    echo '__NEED_DEPLOY__'; "
+            f"  fi; "
+            f"else "
+            f"  echo '__NOT_FOUND__'; "
+            f"fi"
+        )
+
+        cmd = [
+            ssh_bin,
+            '-o', 'ConnectTimeout=4',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-p', str(port),
+            f'{user}@{host}',
+            unified_script
+        ]
+
+        res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=9)
+
+        # Automatic mDNS fallback: if configured IP failed, try kindle.local
+        if (not res or res.returncode != 0) and host != 'kindle.local':
+            alt_cmd = [
+                ssh_bin,
+                '-o', 'ConnectTimeout=3',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-p', str(port),
+                f'{user}@kindle.local',
+                unified_script
+            ]
+            alt_res = execute_with_auth(alt_cmd, password=password, key_path=key_path, timeout=6)
+            if alt_res and alt_res.returncode == 0:
+                res = alt_res
+                host = 'kindle.local'
+
+        if res and res.returncode == 0:
+            kindle_connected = True
+            mode = None
+            inspect_lines = []
+            for raw_line in res.stdout.splitlines():
+                line = raw_line.strip()
+                if line.startswith('__VOL__:'):
+                    kindle_volume_found = True
+                    kindle_volume_path = line[8:].strip()
+                    mode = None
+                elif line == '__NOT_FOUND__':
+                    kindle_volume_found = False
+                    mode = None
+                elif line == '__NEED_DEPLOY__':
+                    mode = 'NEED_DEPLOY'
+                elif line == '__LOOSE__':
+                    mode = 'LOOSE'
+                elif line == '__INSPECT__':
+                    mode = 'INSPECT'
+                elif mode == 'LOOSE':
+                    if line.lower().endswith('.cbz') or line.lower().endswith('.zip'):
+                        k = get_chapter_key(line)
+                        if k and k not in ('cover', 'comicinfo.xml', 'toc.ncx'):
+                            kindle_keys.add(k)
+                elif mode == 'INSPECT':
+                    inspect_lines.append(line)
+
+            if mode == 'NEED_DEPLOY' and kindle_volume_path:
+                ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
+                rem_res = inspect_remote_volume(host, port, user, kindle_volume_path, password=password, key_path=key_path)
+                if rem_res.get('status') == 'success' and rem_res.get('exists'):
+                    for k in rem_res.get('chapter_keys', []):
+                        kindle_keys.add(k)
+                    kindle_reading_progress = rem_res.get('reading_progress')
+            elif inspect_lines:
+                parsed_json = False
+                for il in inspect_lines:
+                    if il.startswith('{') and il.endswith('}'):
+                        try:
+                            data = json.loads(il)
+                            if data.get('status') == 'success':
+                                for k in data.get('chapter_keys', []):
+                                    kindle_keys.add(k)
+                                kindle_reading_progress = data.get('reading_progress')
+                                parsed_json = True
+                                break
+                        except Exception:
+                            pass
+                if not parsed_json:
+                    for il in inspect_lines:
+                        parts = il.split()
+                        if len(parts) >= 4:
+                            entry_path = parts[-1]
+                            k = get_chapter_key(entry_path)
+                            if k and k not in ('cover', 'comicinfo.xml', 'toc.ncx'):
+                                kindle_keys.add(k)
+        else:
+            kindle_connected = False
+            kindle_error = (res.stderr.strip() if res and res.stderr else 'Kindle unreachable or SSH failed')
+
+    all_chapter_keys = sorted(list(pc_keys | kindle_keys))
+
+    return {
+        'status': 'success',
+        'pc': {
+            'exists': bool(pc_volume_found or pc_keys),
+            'volume_exists': pc_volume_found,
+            'volume_path': pc_volume_path,
+            'chapter_keys': sorted(list(pc_keys)),
+            'chapters': pc_chapters
+        },
+        'kindle': {
+            'connected': kindle_connected,
+            'exists': bool(kindle_volume_found or kindle_keys),
+            'volume_exists': kindle_volume_found,
+            'remote_path': kindle_volume_path,
+            'chapter_keys': sorted(list(kindle_keys)),
+            'reading_progress': kindle_reading_progress,
+            'error': kindle_error
+        },
+        'all_chapter_keys': all_chapter_keys
+    }
+
+def parse_cd_entries_py(cd_data):
+    entries = []
+    pos = 0
+    while pos < len(cd_data):
+        if cd_data[pos:pos+4] != b'PK\x01\x02':
+            break
+        n_len = struct.unpack('<H', cd_data[pos+28:pos+30])[0]
+        extra_len = struct.unpack('<H', cd_data[pos+30:pos+32])[0]
+        comment_len = struct.unpack('<H', cd_data[pos+32:pos+34])[0]
+        entry_len = 46 + n_len + extra_len + comment_len
+        fname = cd_data[pos+46:pos+46+n_len].decode('utf-8', errors='ignore')
+        entries.append((fname, cd_data[pos:pos+entry_len]))
+        pos += entry_len
+    return entries
+
+def binary_zip_append_filter(target_path, delta_path):
+    EOCD_FMT = '<4sHHHHIIH'
+    with open(target_path, 'r+b') as f_target, open(delta_path, 'rb') as f_delta:
+        f_target.seek(0, os.SEEK_END)
+        t_len = f_target.tell()
+        f_target.seek(max(0, t_len - 65536 - 22), os.SEEK_SET)
+        t_tail = f_target.read()
+        t_eocd_pos = t_tail.rfind(b'PK\x05\x06')
+        if t_eocd_pos == -1:
+            raise ValueError("Target is not a valid ZIP archive")
+        t_eocd_offset = max(0, t_len - 65536 - 22) + t_eocd_pos
+
+        f_target.seek(t_eocd_offset)
+        sig, disk, disk_start, ent_disk, old_entries, old_cd_size, old_cd_offset, comm_len = struct.unpack(EOCD_FMT, f_target.read(22))
+
+        f_target.seek(old_cd_offset, os.SEEK_SET)
+        old_cd_data = f_target.read(old_cd_size)
+
+        f_delta.seek(0, os.SEEK_END)
+        d_len = f_delta.tell()
+        f_delta.seek(max(0, d_len - 65536 - 22), os.SEEK_SET)
+        d_tail = f_delta.read()
+        d_eocd_pos = d_tail.rfind(b'PK\x05\x06')
+        if d_eocd_pos == -1:
+            raise ValueError("Delta is not a valid ZIP archive")
+        d_eocd_offset = max(0, d_len - 65536 - 22) + d_eocd_pos
+
+        f_delta.seek(d_eocd_offset)
+        sig, d_disk, d_disk_start, d_ent_disk, d_entries, d_cd_size, d_cd_offset, d_comm_len = struct.unpack(EOCD_FMT, f_delta.read(22))
+
+        f_delta.seek(0, os.SEEK_SET)
+        delta_local_data = f_delta.read(d_cd_offset)
+
+        f_delta.seek(d_cd_offset, os.SEEK_SET)
+        delta_cd_raw = f_delta.read(d_cd_size)
+
+        old_parsed = parse_cd_entries_py(old_cd_data)
+        delta_parsed = parse_cd_entries_py(delta_cd_raw)
+
+        delta_names = {fname.lower() for fname, _ in delta_parsed}
+        delta_keys = set()
+        for fname, _ in delta_parsed:
+            fn_lower = fname.lower()
+            if fn_lower not in ('comicinfo.xml', 'toc.ncx'):
+                k = get_chapter_key(fname)
+                if k:
+                    delta_keys.add(k)
+
+        filtered_old_cd = bytearray()
+        kept_old_count = 0
+        seen_old_folders = {}
+        for fname, entry_bytes in old_parsed:
+            fn_lower = fname.lower()
+            if fn_lower in delta_names:
+                continue
+            if fn_lower not in ('comicinfo.xml', 'toc.ncx'):
+                k = get_chapter_key(fname)
+                if k and k in delta_keys:
+                    continue
+                if k and k != 'other':
+                    folder = fname.split('/')[0] if '/' in fname else ''
+                    if k not in seen_old_folders:
+                        seen_old_folders[k] = folder
+                    elif seen_old_folders[k] != folder:
+                        continue
+            filtered_old_cd.extend(entry_bytes)
+            kept_old_count += 1
+
+        adjusted_delta_cd = bytearray()
+        for fname, entry_bytes in delta_parsed:
+            entry = bytearray(entry_bytes)
+            local_offset = struct.unpack('<I', entry[42:46])[0]
+            entry[42:46] = struct.pack('<I', local_offset + old_cd_offset)
+            adjusted_delta_cd.extend(entry)
+
+        f_target.seek(old_cd_offset, os.SEEK_SET)
+        f_target.write(delta_local_data)
+
+        new_cd_offset = f_target.tell()
+        f_target.write(filtered_old_cd)
+        f_target.write(adjusted_delta_cd)
+        new_cd_size = f_target.tell() - new_cd_offset
+
+        new_total_entries = kept_old_count + len(delta_parsed)
+        new_eocd = struct.pack(
+            EOCD_FMT,
+            b'PK\x05\x06',
+            0, 0,
+            new_total_entries,
+            new_total_entries,
+            new_cd_size,
+            new_cd_offset,
+            0
+        )
+        f_target.write(new_eocd)
+        f_target.truncate()
+
+def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, auto_transfer=False, host='kindle.local', port=2222, user='root', password=None, key_path=None):
+    """
+    Appends delta_zip into local_target_cbz on PC via instant binary append (O(delta)).
+    Smartly de-duplicates existing chapter copies and avoids duplicating content.
+    If auto_transfer is True:
+      - If volume does NOT exist on Kindle, sends local_target_cbz directly.
+      - If volume DOES exist on Kindle, sends delta_zip to Kindle /tmp/ and runs merge_volume.lua.
+    """
+    exp_target = os.path.expanduser(local_target_cbz)
+    exp_delta = os.path.expanduser(delta_zip_path)
+
+    if not os.path.exists(exp_delta):
+        return {'status': 'error', 'message': f'Delta zip not found: {exp_delta}'}
+
+    os.makedirs(os.path.dirname(exp_target), exist_ok=True)
+    target_existed = os.path.exists(exp_target)
+
+    # 1. Update local CBZ on PC
+    if not target_existed:
+        # Initial creation: move delta directly to target
+        shutil.move(exp_delta, exp_target)
+    else:
+        # True In-Place Binary Append (O(delta)) with safe fallback
+        try:
+            binary_zip_append_filter(exp_target, exp_delta)
+        except Exception as fast_err:
+            # Fallback to standard merge if binary append fails
+            tmp_target = exp_target + '.tmp_merge.zip'
+            try:
+                with zipfile.ZipFile(exp_target, 'r') as zf_old, \
+                     zipfile.ZipFile(exp_delta, 'r') as zf_delta, \
+                     zipfile.ZipFile(tmp_target, 'w', compression=zipfile.ZIP_STORED) as zf_new:
+
+                    delta_keys = set()
+                    for item in zf_delta.infolist():
+                        k = get_chapter_key(item.filename)
+                        if k and k not in ('comicinfo.xml', 'toc.ncx'):
+                            delta_keys.add(k)
+
+                    seen_old_folders = {}
+                    for item in zf_old.infolist():
+                        if item.filename in ('ComicInfo.xml', 'toc.ncx'):
+                            continue
+                        k = get_chapter_key(item.filename)
+                        if k in delta_keys:
+                            continue
+                        folder_prefix = item.filename.split('/')[0] if '/' in item.filename else ''
+                        if k not in seen_old_folders:
+                            seen_old_folders[k] = folder_prefix
+                        if seen_old_folders[k] != folder_prefix:
+                            continue
+                        zf_new.writestr(item, zf_old.read(item.filename))
+
+                    for item in zf_delta.infolist():
+                        zf_new.writestr(item, zf_delta.read(item.filename))
+
+                os.replace(tmp_target, exp_target)
+            except Exception as e:
+                if os.path.exists(tmp_target):
+                    os.remove(tmp_target)
+                return {'status': 'error', 'message': f'Failed to merge local volume: {str(e)}'}
+
+    # 2. Sync to Kindle
+    kindle_result = None
+    if auto_transfer:
+        clean_remote = remote_folder.rstrip('/') if remote_folder else '/mnt/us/koreader'
+        filename = os.path.basename(exp_target)
+
+        # Locate existing volume anywhere on Kindle
+        found_remote_path = find_remote_volume(
+            host, port, user,
+            volume_name=filename,
+            remote_folder=clean_remote,
+            remote_base=os.path.dirname(clean_remote) if '/' in clean_remote else clean_remote,
+            password=password,
+            key_path=key_path
+        )
+
+        ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+        scp_bin = shutil.which('scp') or '/usr/bin/scp'
+        auth_flags = [
+            '-o', 'ConnectTimeout=6',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-P', str(port)
+        ]
+        ssh_auth_flags = [
+            '-o', 'ConnectTimeout=6',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-p', str(port)
+        ]
+
+        if not found_remote_path:
+            # Volume does NOT exist anywhere on Kindle!
+            # Determine best destination folder on Kindle
+            check_manga_dir_cmd = [
+                ssh_bin,
+                '-o', 'ConnectTimeout=4',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-p', str(port),
+                f'{user}@{host}',
+                f"if [ -d '{clean_remote}/manga' ]; then echo '{clean_remote}/manga'; elif [ -d '/mnt/us/koreader/manga' ]; then echo '/mnt/us/koreader/manga'; else echo '{clean_remote}'; fi"
+            ]
+            check_manga_res = execute_with_auth(check_manga_dir_cmd, password=password, key_path=key_path, timeout=5)
+            dest_dir = clean_remote
+            if check_manga_res and check_manga_res.returncode == 0 and check_manga_res.stdout.strip():
+                dest_dir = check_manga_res.stdout.strip()
+
+            kindle_result = scp_transfer(host, port, user, exp_target, dest_dir, password=password, key_path=key_path, force_overwrite=True)
+        else:
+            # Remote volume found! Incremental fast append:
+            remote_target_path = found_remote_path
+            ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
+
+            # Transfer small delta to Kindle /mnt/us/koreader/cache/delta_<timestamp>.zip (avoids tight rootfs /tmp limits)
+            remote_delta = f'/mnt/us/koreader/cache/delta_{int(os.path.getmtime(exp_target))}.zip'
+            delta_transfer_cmd = [scp_bin] + auth_flags + [exp_delta, f'{user}@{host}:{remote_delta}']
+            transfer_res = execute_with_auth(delta_transfer_cmd, password=password, key_path=key_path, timeout=60)
+            if transfer_res.returncode != 0:
+                kindle_result = {'status': 'error', 'message': f'Failed to send delta to Kindle: {transfer_res.stderr}'}
+            else:
+                # Execute merge on Kindle with generous timeout (large volumes take ~45-60s on Kindle eMMC)
+                merge_cmd = [ssh_bin] + ssh_auth_flags + [
+                    f'{user}@{host}',
+                    f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua '{remote_target_path}' '{remote_delta}'"
+                ]
+                try:
+                    merge_res = execute_with_auth(merge_cmd, password=password, key_path=key_path, timeout=180)
+                    out_lines = [l.strip() for l in merge_res.stdout.splitlines() if l.strip().startswith('{')]
+                    if out_lines:
+                        res_json = json.loads(out_lines[-1])
+                        if res_json.get('status') == 'success':
+                            kindle_result = {'status': 'success', 'message': f'Appended new chapter(s) to {os.path.basename(remote_target_path)} on Kindle!'}
+                        else:
+                            kindle_result = {'status': 'error', 'message': res_json.get('message', 'Kindle merge failed')}
+                    else:
+                        kindle_result = {'status': 'error', 'message': f'Kindle merge error: {merge_res.stderr or merge_res.stdout}'}
+                except subprocess.TimeoutExpired:
+                    kindle_result = {'status': 'error', 'message': 'Kindle volume merge timed out after 180s.'}
+                except Exception as e:
+                    kindle_result = {'status': 'error', 'message': f'Merge parsing error: {str(e)}'}
+
+    # Clean up local delta if it still exists
+    if os.path.exists(exp_delta):
+        try:
+            os.remove(exp_delta)
+        except Exception:
+            pass
+
+    return {
+        'status': 'success',
+        'local_path': exp_target,
+        'action': 'merged' if target_existed else 'created',
+        'kindle_result': kindle_result
+    }
+
+def main():
+    while True:
+        try:
+            req = read_message()
+            if req is None:
+                break
+
+            action = req.get('action')
+            host = req.get('host', 'kindle.local')
+            port = req.get('port', 2222)
+            user = req.get('user', 'root')
+            password = req.get('password') or None
+            key_path = req.get('key_path') or None
+
+            if action == 'ping':
+                send_message({'status': 'ok', 'version': '1.0.0'})
+            elif action == 'test_connection':
+                result = test_ssh(host, port, user, password=password, key_path=key_path)
+                send_message(result)
+            elif action == 'scp_transfer':
+                local_path = req.get('local_path', '')
+                remote_path = req.get('remote_path', '/mnt/us/koreader/')
+                force_overwrite = req.get('force_overwrite', False)
+                result = scp_transfer(host, port, user, local_path, remote_path, password=password, key_path=key_path, force_overwrite=force_overwrite)
+                send_message(result)
+            elif action == 'list_files':
+                path = req.get('path', '')
+                files = get_folder_files(path)
+                send_message({'status': 'success', 'files': files})
+            elif action == 'choose_folder':
+                prompt = req.get('prompt', 'Select download folder for manga:')
+                chosen = choose_folder_dialog(prompt=prompt)
+                if chosen:
+                    send_message({'status': 'success', 'path': chosen})
+                else:
+                    send_message({'status': 'cancelled', 'path': None})
+            elif action == 'relocate_file':
+                source_path = req.get('source_path', '')
+                dest_dir = req.get('dest_dir', '')
+                result = relocate_file(source_path, dest_dir)
+                send_message(result)
+            elif action == 'cleanup_empty_dir':
+                path = req.get('path', '')
+                cleaned = cleanup_empty_dir(path)
+                send_message({'status': 'success', 'cleaned': cleaned})
+            elif action == 'inspect_volume':
+                volume_path = req.get('volume_path', '')
+                result = inspect_volume(volume_path)
+                send_message(result)
+            elif action == 'inspect_remote_volume':
+                remote_path = req.get('remote_path', '')
+                result = inspect_remote_volume(host, port, user, remote_path, password=password, key_path=key_path)
+                send_message(result)
+            elif action == 'scan_archives':
+                local_folder = req.get('local_folder', '')
+                volume_name = req.get('volume_name', '')
+                remote_folder = req.get('remote_folder', '')
+                remote_base = req.get('remote_base', '')
+                result = scan_archives(
+                    local_folder,
+                    volume_name,
+                    remote_folder=remote_folder,
+                    remote_base=remote_base,
+                    host=host,
+                    port=port,
+                    user=user,
+                    password=password,
+                    key_path=key_path
+                )
+                send_message(result)
+            elif action == 'append_to_volume':
+                local_target_cbz = req.get('local_target_cbz', '')
+                delta_zip_path = req.get('delta_zip_path', '')
+                remote_folder = req.get('remote_folder', '')
+                auto_transfer = req.get('auto_transfer', False)
+                result = append_to_volume(
+                    local_target_cbz,
+                    delta_zip_path,
+                    remote_folder=remote_folder,
+                    auto_transfer=auto_transfer,
+                    host=host,
+                    port=port,
+                    user=user,
+                    password=password,
+                    key_path=key_path
+                )
+                send_message(result)
+            else:
+                send_message({'status': 'error', 'message': f'Unknown action: {action}'})
+        except Exception as e:
+            send_message({'status': 'error', 'message': f'Host error: {str(e)}'})
+
+if __name__ == '__main__':
+    main()
+

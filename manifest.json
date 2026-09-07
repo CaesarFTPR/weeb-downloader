@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "WeebCentral Kindle Downloader",
+  "version": "1.0.0",
+  "description": "Download WeebCentral manga chapters in CBZ/ZIP for KOReader and transfer to Kindle via SSH/SCP",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "WeebCentral Manga Downloader",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "storage",
+    "nativeMessaging",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://weebcentral.com/*",
+    "https://*.weebcentral.com/*",
+    "*://*/*"
+  ],
+  "background": {
+    "service_worker": "background/service_worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://weebcentral.com/*"
+      ],
+      "js": [
+        "content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1ERtv4Kq3HeiUuTiyPFAezdbyDp9Bm8fO1JcHA3E/jR1fPpqIla6tZp2k4GWDvJsHHiC0OHZkBCMNnOnvT7B7U8mxK9P5YNGWzyKJ5fNOo6gZ5nAZTCcH4fvZHlPGDUaZ0TF4/ZbO/ZYzuiNUl9N1kHsfq+gGHsQTMaoNwayT3CnsMG4pJ+JY02eKDlTGL7qfhlKcz5CjjzkaWEPlD7QJQlALStRAJ05PKXn8NyXXDFrf6uNn+Rspp12BXupYbYh1UCKB18MPIqgNg4s0IERKkTEz9aZ1C0KXkmM+CcZDcXZ1iWcjFoJo6s4mpGDDZCHdJfcJIbpOFc83yKaZXk0nQIDAQAB"
+}

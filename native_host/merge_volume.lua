@@ -1,0 +1,425 @@
+--[[
+  merge_volume.lua
+  -- version: 3.0.0
+  True In-Place Binary CBZ Volume Merger for Kindle KOReader using native LuaJIT & libc.
+  Time Complexity: O(delta) - appends new chapters in ~0.15s without rewriting existing chapters.
+
+  Usage:
+    /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua <target_cbz> <delta_zip>
+    /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect <target_cbz>
+--]]
+
+local ffi = require("ffi")
+ffi.cdef[[
+    typedef struct FILE FILE;
+    FILE *fopen(const char *path, const char *mode);
+    int fclose(FILE *fp);
+    int fseek(FILE *stream, long offset, int whence);
+    long ftell(FILE *stream);
+    size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream);
+    size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
+    int fileno(FILE *stream);
+    int ftruncate(int fd, long length);
+    int fflush(FILE *stream);
+]]
+local C = ffi.C
+
+local function get_chapter_key(path)
+    local first = path:match("^([^/]+)/") or path
+    local first_lower = first:lower()
+    if first_lower:find("cover") or first_lower:find("обложк") then
+        return "cover"
+    end
+    local num = first_lower:match("chapter%s*([%d%.]+)") or
+                first_lower:match("ch%.?%s*([%d%.]+)") or
+                first_lower:match("глава%s*([%d%.]+)") or
+                first_lower:match("гл%.?%s*([%d%.]+)") or
+                first_lower:match("(%d+%.?%d*)")
+    if num then
+        local n = tonumber(num)
+        if n then return "ch_" .. tostring(n) end
+    end
+    local clean = first_lower:gsub("^%d+[%._%-]%s*", ""):gsub("%s+", "_")
+    return clean
+end
+
+local function read_u16(s, pos)
+    local b1, b2 = s:byte(pos, pos + 1)
+    return b1 + b2 * 256
+end
+
+local function read_u32(s, pos)
+    local b1, b2, b3, b4 = s:byte(pos, pos + 3)
+    return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216
+end
+
+local function pack_u16(v)
+    local b1 = v % 256
+    local b2 = math.floor(v / 256) % 256
+    return string.char(b1, b2)
+end
+
+local function pack_u32(v)
+    local b1 = v % 256
+    local b2 = math.floor(v / 256) % 256
+    local b3 = math.floor(v / 65536) % 256
+    local b4 = math.floor(v / 16777216) % 256
+    return string.char(b1, b2, b3, b4)
+end
+
+local function find_eocd(fp)
+    C.fseek(fp, 0, 2) -- SEEK_END
+    local file_len = tonumber(C.ftell(fp))
+    if file_len < 22 then return nil end
+    local search_len = math.min(file_len, 65536 + 22)
+    local search_start = file_len - search_len
+    C.fseek(fp, search_start, 0) -- SEEK_SET
+
+    local buf = ffi.new("char[?]", search_len)
+    local read_bytes = tonumber(C.fread(buf, 1, search_len, fp))
+    if read_bytes < 22 then return nil end
+    local str = ffi.string(buf, read_bytes)
+
+    local eocd_pos = nil
+    local p = 1
+    while true do
+        local found = str:find("PK\5\6", p, true)
+        if not found then break end
+        eocd_pos = found
+        p = found + 1
+    end
+    if not eocd_pos then return nil end
+
+    local abs_eocd_pos = search_start + (eocd_pos - 1)
+    local eocd_data = str:sub(eocd_pos, eocd_pos + 21)
+    local total_entries = read_u16(eocd_data, 11)
+    local cd_size = read_u32(eocd_data, 13)
+    local cd_offset = read_u32(eocd_data, 17)
+
+    return {
+        file_len = file_len,
+        offset = abs_eocd_pos,
+        total_entries = total_entries,
+        cd_size = cd_size,
+        cd_offset = cd_offset
+    }
+end
+
+local function parse_cd_entries(cd_str)
+    local entries = {}
+    local pos = 1
+    local len = #cd_str
+    while pos <= len do
+        if cd_str:sub(pos, pos + 3) ~= "PK\1\2" then break end
+        local n_len = read_u16(cd_str, pos + 28)
+        local extra_len = read_u16(cd_str, pos + 30)
+        local comm_len = read_u16(cd_str, pos + 32)
+        local entry_len = 46 + n_len + extra_len + comm_len
+        local fname = cd_str:sub(pos + 46, pos + 46 + n_len - 1)
+        local entry_bytes = cd_str:sub(pos, pos + entry_len - 1)
+        entries[#entries + 1] = {
+            name = fname,
+            bytes = entry_bytes
+        }
+        pos = pos + entry_len
+    end
+    return entries
+end
+
+-- Inspect mode: instantaneous Central Directory scan + KOReader .sdr metadata reading
+if arg[1] == "--inspect" then
+    local target_cbz = arg[2]
+    if not target_cbz then
+        io.write('{"status":"error","message":"No volume path provided"}\n')
+        os.exit(1)
+    end
+
+    local fp = C.fopen(target_cbz, "rb")
+    if fp == nil then
+        io.write('{"status":"success","exists":false,"chapters":[],"chapter_keys":[]}\n')
+        os.exit(0)
+    end
+
+    local eocd = find_eocd(fp)
+    if not eocd then
+        C.fclose(fp)
+        io.write('{"status":"error","message":"Invalid or unreadable ZIP archive"}\n')
+        os.exit(1)
+    end
+
+    C.fseek(fp, eocd.cd_offset, 0)
+    local cd_buf = ffi.new("char[?]", eocd.cd_size)
+    local read_cd = tonumber(C.fread(cd_buf, 1, eocd.cd_size, fp))
+    C.fclose(fp)
+
+    local cd_str = ffi.string(cd_buf, read_cd or 0)
+    local entries = parse_cd_entries(cd_str)
+
+    local seen_folders = {}
+    local folders = {}
+    local keys = {}
+    local image_count = 0
+    local page_to_chapter = {}
+
+    for _, e in ipairs(entries) do
+        local path = e.name
+        local folder = path:match("^([^/]+)/")
+        local ext = path:match("%.([%w]+)$")
+        if ext then
+            ext = ext:lower()
+            if ext == "jpg" or ext == "jpeg" or ext == "png" or ext == "webp" or ext == "gif" or ext == "avif" then
+                image_count = image_count + 1
+                page_to_chapter[image_count] = folder or path
+            end
+        end
+
+        if folder then
+            if not seen_folders[folder] then
+                seen_folders[folder] = true
+                local k = get_chapter_key(folder)
+                if k and k ~= "cover" then
+                    folders[#folders + 1] = folder
+                    keys[#keys + 1] = k
+                end
+            end
+        else
+            local k = get_chapter_key(path)
+            local p_lower = path:lower()
+            if k and k ~= "cover" and p_lower ~= "comicinfo.xml" and p_lower ~= "toc.ncx" then
+                if not seen_folders[k] then
+                    seen_folders[k] = true
+                    folders[#folders + 1] = path
+                    keys[#keys + 1] = k
+                end
+            end
+        end
+    end
+
+    -- Read KOReader .sdr metadata for live reading progress
+    local reading_progress = nil
+    local sdr_dir = target_cbz:gsub("%.%w+$", ".sdr")
+    local meta_candidates = {
+        sdr_dir .. "/metadata.cbz.lua",
+        sdr_dir .. "/metadata.zip.lua"
+    }
+    for _, meta_file in ipairs(meta_candidates) do
+        local f_meta = io.open(meta_file, "r")
+        if f_meta then
+            f_meta:close()
+            local chunk = loadfile(meta_file)
+            if chunk then
+                local ok, mdata = pcall(chunk)
+                if ok and type(mdata) == "table" then
+                    local last_p = mdata.last_page or mdata.page or 1
+                    local pct = mdata.percent_finished or 0
+                    if pct > 0 or last_p > 1 then
+                        local cur_ch = page_to_chapter[last_p]
+                        reading_progress = {
+                            last_page = last_p,
+                            percent = math.floor(pct * 100 + 0.5),
+                            chapter = cur_ch,
+                            chapter_key = cur_ch and get_chapter_key(cur_ch) or nil,
+                            total_pages = image_count
+                        }
+                    end
+                    break
+                end
+            end
+        end
+    end
+
+    local json_folders = {}
+    for _, f in ipairs(folders) do
+        json_folders[#json_folders + 1] = string.format("%q", f)
+    end
+    local json_keys = {}
+    for _, k in ipairs(keys) do
+        json_keys[#json_keys + 1] = string.format("%q", k)
+    end
+
+    local json_prog = "null"
+    if reading_progress then
+        local ch_str = reading_progress.chapter and string.format("%q", reading_progress.chapter) or "null"
+        local chk_str = reading_progress.chapter_key and string.format("%q", reading_progress.chapter_key) or "null"
+        json_prog = string.format('{"last_page":%d,"percent":%d,"chapter":%s,"chapter_key":%s,"total_pages":%d}',
+            reading_progress.last_page, reading_progress.percent, ch_str, chk_str, reading_progress.total_pages)
+    end
+
+    io.write(string.format('{"status":"success","exists":true,"chapters":[%s],"chapter_keys":[%s],"total_pages":%d,"reading_progress":%s}\n',
+        table.concat(json_folders, ","), table.concat(json_keys, ","), image_count, json_prog))
+    os.exit(0)
+end
+
+-- Merge mode
+local target_cbz = arg[1]
+local delta_zip = arg[2]
+
+if not target_cbz or not delta_zip then
+    io.write('{"status":"error","message":"Usage: luajit merge_volume.lua <target_cbz> <delta_zip>"}\n')
+    os.exit(1)
+end
+
+local f_test_delta = io.open(delta_zip, "rb")
+if not f_test_delta then
+    io.write('{"status":"error","message":"Delta file not found: ' .. tostring(delta_zip) .. '"}\n')
+    os.exit(1)
+end
+f_test_delta:close()
+
+-- If target does not exist yet, promote delta directly to target
+local f_test_target = io.open(target_cbz, "rb")
+if not f_test_target then
+    local parent = target_cbz:match("(.+)/[^/]+$")
+    if parent then
+        os.execute("mkdir -p '" .. parent:gsub("'", "'\\''") .. "'")
+    end
+    local ok, err = os.rename(delta_zip, target_cbz)
+    if not ok then
+        local cp_ok = os.execute("cp -f '" .. delta_zip .. "' '" .. target_cbz .. "' && rm -f '" .. delta_zip .. "'")
+        if cp_ok ~= 0 then
+            io.write('{"status":"error","message":"Failed to move delta to target: ' .. tostring(err) .. '"}\n')
+            os.exit(1)
+        end
+    end
+    io.write('{"status":"success","action":"created","target":"' .. target_cbz .. '"}\n')
+    os.exit(0)
+end
+f_test_target:close()
+
+-- Target exists. Perform True In-Place Binary ZIP Append (O(delta))
+local f_target = C.fopen(target_cbz, "r+b")
+if f_target == nil then
+    io.write('{"status":"error","message":"Cannot open target for writing: ' .. target_cbz .. '"}\n')
+    os.exit(1)
+end
+
+local f_delta = C.fopen(delta_zip, "rb")
+if f_delta == nil then
+    C.fclose(f_target)
+    io.write('{"status":"error","message":"Cannot open delta for reading: ' .. delta_zip .. '"}\n')
+    os.exit(1)
+end
+
+local t_eocd = find_eocd(f_target)
+local d_eocd = find_eocd(f_delta)
+
+if not t_eocd or not d_eocd then
+    C.fclose(f_target)
+    C.fclose(f_delta)
+    io.write('{"status":"error","message":"Invalid target or delta ZIP structure"}\n')
+    os.exit(1)
+end
+
+-- Read old Central Directory
+C.fseek(f_target, t_eocd.cd_offset, 0)
+local old_cd_buf = ffi.new("char[?]", t_eocd.cd_size)
+C.fread(old_cd_buf, 1, t_eocd.cd_size, f_target)
+local old_cd_str = ffi.string(old_cd_buf, t_eocd.cd_size)
+
+-- Read delta Central Directory
+C.fseek(f_delta, d_eocd.cd_offset, 0)
+local delta_cd_buf = ffi.new("char[?]", d_eocd.cd_size)
+C.fread(delta_cd_buf, 1, d_eocd.cd_size, f_delta)
+local delta_cd_str = ffi.string(delta_cd_buf, d_eocd.cd_size)
+
+local old_entries = parse_cd_entries(old_cd_str)
+local delta_entries = parse_cd_entries(delta_cd_str)
+
+-- Identify delta filenames and chapter keys
+local delta_names = {}
+local delta_keys = {}
+for _, e in ipairs(delta_entries) do
+    local n_lower = e.name:lower()
+    delta_names[n_lower] = true
+    if n_lower ~= "comicinfo.xml" and n_lower ~= "toc.ncx" then
+        local k = get_chapter_key(e.name)
+        if k then delta_keys[k] = true end
+    end
+end
+
+-- Filter old entries: drop files in delta (ComicInfo.xml, toc.ncx), chapters overridden by delta, and older duplicate folders
+local kept_old_cd = {}
+local kept_old_count = 0
+local seen_old_folders = {}
+
+for _, e in ipairs(old_entries) do
+    local n_lower = e.name:lower()
+    local should_skip = false
+    if delta_names[n_lower] then
+        should_skip = true
+    elseif n_lower ~= "comicinfo.xml" and n_lower ~= "toc.ncx" then
+        local k = get_chapter_key(e.name)
+        if k and delta_keys[k] then
+            should_skip = true
+        elseif k and k ~= "other" then
+            local folder = e.name:match("^([^/]+)/") or ""
+            if not seen_old_folders[k] then
+                seen_old_folders[k] = folder
+            elseif seen_old_folders[k] ~= folder then
+                should_skip = true
+            end
+        end
+    end
+
+    if not should_skip then
+        kept_old_cd[#kept_old_cd + 1] = e.bytes
+        kept_old_count = kept_old_count + 1
+    end
+end
+
+-- Adjust delta local header offsets by adding t_eocd.cd_offset
+local adj_delta_cd = {}
+for _, e in ipairs(delta_entries) do
+    local entry_str = e.bytes
+    local local_offset = read_u32(entry_str, 43)
+    local new_local_offset = local_offset + t_eocd.cd_offset
+    local adj_entry = entry_str:sub(1, 42) .. pack_u32(new_local_offset) .. entry_str:sub(47)
+    adj_delta_cd[#adj_delta_cd + 1] = adj_entry
+end
+
+-- Seek to t_eocd.cd_offset in target and append delta payload directly
+C.fseek(f_target, t_eocd.cd_offset, 0)
+C.fseek(f_delta, 0, 0)
+local remaining = d_eocd.cd_offset
+local chunk_size = 65536
+local stream_buf = ffi.new("char[?]", chunk_size)
+while remaining > 0 do
+    local to_read = math.min(remaining, chunk_size)
+    local n = tonumber(C.fread(stream_buf, 1, to_read, f_delta))
+    if n <= 0 then break end
+    C.fwrite(stream_buf, 1, n, f_target)
+    remaining = remaining - n
+end
+
+-- Write new Central Directory
+local new_cd_offset = tonumber(C.ftell(f_target))
+for _, b in ipairs(kept_old_cd) do
+    C.fwrite(b, 1, #b, f_target)
+end
+for _, b in ipairs(adj_delta_cd) do
+    C.fwrite(b, 1, #b, f_target)
+end
+local new_cd_size = tonumber(C.ftell(f_target)) - new_cd_offset
+
+-- Write new EOCD record
+local total_new_entries = kept_old_count + #delta_entries
+local new_eocd = "PK\5\6" .. "\0\0\0\0" ..
+                 pack_u16(total_new_entries) .. pack_u16(total_new_entries) ..
+                 pack_u32(new_cd_size) .. pack_u32(new_cd_offset) .. "\0\0"
+C.fwrite(new_eocd, 1, #new_eocd, f_target)
+C.fflush(f_target)
+
+local final_pos = tonumber(C.ftell(f_target))
+local fd = C.fileno(f_target)
+local trunc_ok = pcall(function() C.ftruncate(fd, final_pos) end)
+if not trunc_ok then
+    os.execute(string.format("truncate -s %d %q 2>/dev/null", final_pos, target_cbz))
+end
+
+C.fclose(f_target)
+C.fclose(f_delta)
+
+os.remove(delta_zip)
+os.execute("touch '" .. target_cbz:gsub("'", "'\\''") .. "' 2>/dev/null")
+
+io.write(string.format('{"status":"success","action":"merged","entries":%d,"target":%q}\n', total_new_entries, target_cbz))

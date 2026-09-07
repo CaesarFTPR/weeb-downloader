@@ -1,0 +1,9 @@
+{
+  "name": "com.weebdownloader.kindle",
+  "description": "Kindle SSH SCP Native Messaging Host for WeebCentral Downloader",
+  "path": "/path/to/weeb-downloader/native_host/kindle_transfer_host.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://kipgkfhcagnbofkaiechcpfgfmcdeald/"
+  ]
+}

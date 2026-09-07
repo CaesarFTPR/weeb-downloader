@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WeebCentral Kindle Downloader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header with Navigation Tabs -->
+    <header class="app-header">
+      <div class="logo-group">
+        <img src="../icons/icon48.png" alt="Logo" class="app-logo">
+        <div>
+          <h1 class="app-title">WeebCentral</h1>
+          <span class="app-subtitle">Kindle & KOReader</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <nav class="tabs-nav">
+          <button id="tab-btn-chapters" class="tab-btn active" data-tab="tab-chapters">
+            <span>Chapters</span>
+          </button>
+          <button id="tab-btn-settings" class="tab-btn" data-tab="tab-settings">
+            <span>Settings</span>
+          </button>
+        </nav>
+        <button id="btn-popout" class="btn-icon" title="Открыть в отдельном окне (не будет закрываться при клике вне окна)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Global Notification Banner -->
+    <div id="status-banner" class="status-banner hidden"></div>
+
+    <!-- TAB 1: CHAPTERS -->
+    <main id="tab-chapters" class="tab-content active">
+      <!-- Manga Info Header -->
+      <section class="manga-card" id="manga-card">
+        <img id="manga-cover" class="manga-cover" src="../icons/icon128.png" alt="Cover">
+        <div class="manga-meta">
+          <h2 id="manga-title" class="manga-title" title="Manga Title">Loading manga...</h2>
+          <div class="manga-tags">
+            <span id="chapter-count-badge" class="badge">0 chapters</span>
+            <span id="selection-count-badge" class="badge badge-accent">0 selected</span>
+            <span id="reading-progress-badge" class="badge badge-reading hidden" title="Reading position in KOReader on Kindle">📖 Kindle: 0%</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Selection & Filter Controls -->
+      <section class="controls-toolbar">
+        <div class="range-selector-row">
+          <input type="text" id="range-input" class="input-text range-input" placeholder="Range: e.g. 1-10, 15, 22">
+          <button id="btn-apply-range" class="btn btn-secondary btn-sm" title="Apply range selection">Select</button>
+          <button id="btn-scan-archives" class="btn btn-secondary btn-sm btn-scan-archives" title="Check PC and Kindle archives for downloaded chapters">
+            <span class="scan-btn-content">🔍 Check Archives</span>
+          </button>
+        </div>
+        <div class="quick-actions-row">
+          <button id="btn-select-all" class="btn-text">All</button>
+          <span class="divider">|</span>
+          <button id="btn-select-none" class="btn-text">None</button>
+          <span class="divider">|</span>
+          <button id="btn-select-next-5" class="btn-text" title="Select next 5 undownloaded chapters">+5 Next</button>
+          <span class="divider">|</span>
+          <button id="btn-select-next-10" class="btn-text" title="Select next 10 undownloaded chapters">+10 Next</button>
+          <span class="divider">|</span>
+          <button id="btn-select-new" class="btn-text" title="Select all chapters not yet downloaded">New</button>
+          <span class="divider">|</span>
+          <button id="btn-invert-selection" class="btn-text">Invert</button>
+        </div>
+        <div class="filter-toolbar-row">
+          <div class="search-box-wrapper">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="filter-input" class="input-text filter-input" placeholder="Search chapters (e.g. 105, Ch. 2)...">
+            <button id="btn-clear-filter" class="btn-clear-filter hidden" type="button" title="Clear search">✕</button>
+          </div>
+          <button id="btn-toggle-hide-downloaded" class="btn btn-secondary btn-xs btn-toggle-filter" type="button" title="Toggle hiding already downloaded chapters">
+            <span id="icon-toggle-hide">👁️</span> <span id="text-toggle-hide">Hide Done</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- Chapter List -->
+      <section class="chapter-list-section">
+        <div id="chapter-list-loading" class="empty-state">
+          <div class="spinner"></div>
+          <p>Scanning manga chapters...</p>
+        </div>
+        <div id="chapter-list-not-series" class="empty-state hidden">
+          <p>⚠️ Open a manga series page on <b>weebcentral.com</b> to download chapters.</p>
+        </div>
+        <div id="chapter-list" class="chapter-list hidden">
+          <!-- Dynamically populated -->
+        </div>
+      </section>
+
+      <!-- Download & Progress Section -->
+      <section class="action-footer">
+        <!-- Progress Bar (hidden by default) -->
+        <div id="progress-container" class="progress-container hidden">
+          <div class="progress-header">
+            <span id="progress-status-text" class="progress-status-text">Preparing...</span>
+            <span id="progress-percent-text" class="progress-percent-text">0%</span>
+          </div>
+          <div class="progress-track">
+            <div id="progress-bar" class="progress-bar" style="width: 0%;"></div>
+          </div>
+          <button id="btn-cancel-download" class="btn btn-danger btn-sm mt-1">Cancel</button>
+        </div>
+
+        <!-- Destination Directory Picker Bar -->
+        <div class="destination-bar">
+          <div class="destination-info" title="Current save folder on your computer">
+            <span class="destination-icon">📁</span>
+            <span id="destination-path-display" class="destination-path">~/Downloads/</span>
+          </div>
+          <button id="btn-browse-destination" class="btn btn-secondary btn-xs" type="button" title="Choose download folder on your computer">
+            Browse
+          </button>
+        </div>
+
+        <!-- Download Action Button -->
+        <button id="btn-download" class="btn btn-primary btn-block">
+          <span class="btn-icon">📥</span> Download Selected
+        </button>
+
+        <!-- Kindle SSH Transfer Action Row -->
+        <div class="kindle-action-card compact">
+          <div class="kindle-buttons-row">
+            <button id="btn-transfer-kindle" class="btn btn-secondary btn-sm flex-1" title="Send downloaded manga to Kindle via SCP">
+              📱 Send to Kindle
+            </button>
+            <button id="btn-copy-scp" class="btn btn-secondary btn-sm" title="Copy SCP command to clipboard">
+              📋 Copy SCP
+            </button>
+          </div>
+          <div id="transfer-status" class="transfer-status hidden"></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- TAB 2: SETTINGS -->
+    <main id="tab-settings" class="tab-content">
+      <div class="settings-scroll-area">
+        <!-- Storage & Format Settings -->
+        <section class="settings-group">
+          <h3 class="settings-title">📁 Download & Format</h3>
+
+          <div class="form-field">
+            <label for="setting-format">File Format for KOReader</label>
+            <select id="setting-format" class="input-select">
+              <option value="cbz" selected>.CBZ (Recommended for KOReader)</option>
+              <option value="zip">.ZIP (Standard Archive)</option>
+              <option value="images">Folder of Images (JPG/PNG)</option>
+            </select>
+            <span class="field-hint">KOReader provides native page flip, contrast, and right-to-left manga mode for CBZ.</span>
+          </div>
+
+          <div class="form-field">
+            <label for="setting-package-mode">Packaging Mode</label>
+            <select id="setting-package-mode" class="input-select">
+              <option value="cumulative_tome" selected>🌟 Cumulative Manga Tome (Single Book Card with TOC)</option>
+              <option value="individual">Individual file per chapter (e.g. Chapter 001.cbz)</option>
+            </select>
+            <span class="field-hint">Cumulative Tome keeps 1 single book on Kindle with cover & TOC, adding new chapters in seconds without re-sending old chapters!</span>
+          </div>
+
+          <div class="form-field">
+            <label for="setting-local-downloads">Local Downloads Directory (PC/Mac)</label>
+            <div class="input-with-button-row">
+              <input type="text" id="setting-local-downloads" class="input-text flex-1" placeholder="~/Downloads">
+              <button id="btn-settings-browse-downloads" class="btn btn-secondary btn-sm" type="button" title="Choose local folder">
+                📁 Browse...
+              </button>
+            </div>
+            <span class="field-hint">Base folder on your computer where downloads are saved.</span>
+          </div>
+
+          <div class="form-field">
+            <label for="setting-folder-name">Target Subfolder</label>
+            <input type="text" id="setting-folder-name" class="input-text" placeholder="{title}">
+            <span class="field-hint">Subfolder inside base directory. Use <code>{title}</code> for manga name.</span>
+          </div>
+          <div class="form-field">
+            <label for="setting-filename-template">Chapter File Naming</label>
+            <select id="setting-filename-template" class="input-select">
+              <option value="{chapter}" selected>{chapter} (e.g. Chapter 281.cbz)</option>
+              <option value="Ch.{number.3}">Ch.{number.3} (e.g. Ch.001, Ch.281 - Zero Padded)</option>
+              <option value="{title} - {chapter}">{title} - {chapter}</option>
+              <option value="{title} - Ch.{number.3}">{title} - Ch.{number.3}</option>
+            </select>
+            <span class="field-hint">Zero-padded numbers ensure perfect sorting order in KOReader.</span>
+          </div>
+
+          <label class="form-checkbox-field" for="setting-skip-existing">
+            <input type="checkbox" id="setting-skip-existing" checked>
+            <span>Skip already downloaded chapters</span>
+          </label>
+        </section>
+
+        <!-- Kindle E-Ink Image Optimization Settings -->
+        <section class="settings-group">
+          <h3 class="settings-title">⚡ Kindle E-Ink Optimization</h3>
+
+          <label class="form-checkbox-field" for="setting-optimize-kindle">
+            <input type="checkbox" id="setting-optimize-kindle" checked>
+            <span><b>Optimize for Kindle (Grayscale & Compression)</b></span>
+          </label>
+          <span class="field-hint" style="margin-top: -6px; margin-bottom: 6px;">
+            Converts pages to 8-bit B&W and scales to screen resolution. Reduces file size by 70–80% (~2-3 MB/ch instead of ~10 MB).
+          </span>
+
+          <details id="optimization-options" class="optimization-details">
+            <summary class="details-summary">⚙️ Advanced Image Settings (Resolution, Quality, Filters)</summary>
+            <div class="details-content">
+              <div class="form-field">
+                <label for="setting-optimized-format">Optimized Format</label>
+                <select id="setting-optimized-format" class="input-select">
+                  <option value="webp" selected>WebP (Smallest file size, KOReader)</option>
+                  <option value="jpeg">JPEG (Standard compatibility)</option>
+                </select>
+              </div>
+
+              <div class="form-field">
+                <label for="setting-max-resolution">Max Height / Resolution</label>
+                <select id="setting-max-resolution" class="input-select">
+                  <option value="1680" selected>1680px (Kindle Paperwhite 11 / Oasis 300 PPI)</option>
+                  <option value="1448">1448px (Kindle Paperwhite 10 / Basic 300 PPI, -30% size)</option>
+                  <option value="1200">1200px (Extra Compact, ~1–1.5 MB/ch, -50% size)</option>
+                  <option value="0">Original (No Resizing)</option>
+                </select>
+              </div>
+
+              <div class="form-field">
+                <label for="setting-image-quality">Compression Quality</label>
+                <select id="setting-image-quality" class="input-select">
+                  <option value="0.75" selected>Balanced 75% (Recommended, ~1.5–2 MB/ch)</option>
+                  <option value="0.65">High Compression 65% (~1–1.3 MB/ch)</option>
+                  <option value="0.55">Maximum Compression 55% (~800 KB–1 MB/ch)</option>
+                  <option value="0.85">High Quality 85% (~2–3 MB/ch)</option>
+                </select>
+              </div>
+
+              <label class="form-checkbox-field" for="setting-grayscale">
+                <input type="checkbox" id="setting-grayscale" checked>
+                <span>Convert to 8-bit Grayscale (matches Kindle 16 shades)</span>
+              </label>
+
+              <label class="form-checkbox-field" for="setting-clean-paper">
+                <input type="checkbox" id="setting-clean-paper" checked>
+                <span>Clean white margins & scanner noise (saves +20% size)</span>
+              </label>
+
+              <label class="form-checkbox-field" for="setting-sharpen-eink">
+                <input type="checkbox" id="setting-sharpen-eink" checked>
+                <span>E-Ink Micro-sharpening (crisper fonts & line art on Kindle)</span>
+              </label>
+            </div>
+          </details>
+        </section>
+
+        <!-- Kindle SSH / SCP Settings -->
+        <section class="settings-group">
+          <h3 class="settings-title">📱 Kindle SSH / SCP Connection</h3>
+
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="setting-ssh-host">Kindle IP / Host</label>
+              <input type="text" id="setting-ssh-host" class="input-text" placeholder="kindle.local">
+            </div>
+            <div class="form-field">
+              <label for="setting-ssh-port">SSH Port</label>
+              <input type="number" id="setting-ssh-port" class="input-text" placeholder="2222">
+            </div>
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="setting-ssh-user">SSH User</label>
+              <input type="text" id="setting-ssh-user" class="input-text" placeholder="root">
+            </div>
+            <div class="form-field">
+              <label for="setting-remote-path">Remote Kindle Path</label>
+              <input type="text" id="setting-remote-path" class="input-text" placeholder="/mnt/us/koreader/">
+            </div>
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="setting-ssh-password">SSH Password (optional)</label>
+              <input type="password" id="setting-ssh-password" class="input-text" placeholder="Kindle root password">
+            </div>
+            <div class="form-field">
+              <label for="setting-ssh-key-path">SSH Key Path (optional)</label>
+              <input type="text" id="setting-ssh-key-path" class="input-text" placeholder="~/.ssh/id_ed25519">
+            </div>
+          </div>
+
+
+          <div class="form-checkbox-field">
+            <input type="checkbox" id="setting-auto-transfer">
+            <label for="setting-auto-transfer">Auto-send to Kindle when download finishes</label>
+          </div>
+
+          <div class="settings-action-row">
+            <button id="btn-test-ssh" class="btn btn-secondary btn-sm">
+              🔌 Test SSH Connection
+            </button>
+            <span id="ssh-test-result" class="test-result-indicator"></span>
+          </div>
+        </section>
+
+        <!-- Save Button -->
+        <section class="settings-save-section">
+          <button id="btn-save-settings" class="btn btn-accent btn-block">
+            💾 Save Settings
+          </button>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- Main popup controller -->
+  <script src="popup.js"></script>
+</body>
+</html>
