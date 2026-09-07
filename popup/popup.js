@@ -586,7 +586,7 @@ function updateSaveButtonState() {
                    && !sessionRemovedIds.has(currentManga.seriesId);
       if (isSaved) {
         elements.btnSaveMangaHeader.className = 'btn-toggle-save btn-save-header is-saved';
-        elements.btnSaveMangaHeader.textContent = '🗑️';
+        elements.btnSaveMangaHeader.textContent = '➖';
         elements.btnSaveMangaHeader.title = 'Удалить из списка';
       } else {
         elements.btnSaveMangaHeader.className = 'btn-toggle-save btn-save-header is-not-saved';
@@ -823,7 +823,7 @@ function renderSavedMangaList() {
                 type="button" 
                 data-series-id="${item.seriesId}" 
                 title="${isSaved ? 'Удалить из списка' : 'Добавить в список'}">
-          ${isSaved ? '🗑️' : '➕'}
+          ${isSaved ? '➖' : '➕'}
         </button>
       </div>
     `;
