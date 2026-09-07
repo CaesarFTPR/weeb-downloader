@@ -984,6 +984,7 @@ ${navPointsXml}
       delta_zip_path: localDeltaPath,
       remote_folder: remoteFolder,
       save_to_pc: saveToPc,
+      save_to_kindle: saveToKindle,
       auto_transfer: saveToKindle,
       host: settings.sshHost,
       port: settings.sshPort,

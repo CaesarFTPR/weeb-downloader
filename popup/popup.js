@@ -19,7 +19,6 @@ const DEFAULT_SETTINGS = {
   sshKeyPath: '',
   remotePath: '/mnt/us/koreader/',
   localDownloads: '~/Downloads',
-  autoTransfer: true,
   saveToPc: true,
   saveToKindle: true,
   skipExisting: true
@@ -136,7 +135,6 @@ const elements = {
   settingSshKeyPath: document.getElementById('setting-ssh-key-path'),
   settingRemotePath: document.getElementById('setting-remote-path'),
   settingLocalDownloads: document.getElementById('setting-local-downloads'),
-  settingAutoTransfer: document.getElementById('setting-auto-transfer'),
   btnTestSsh: document.getElementById('btn-test-ssh'),
   sshTestResult: document.getElementById('ssh-test-result'),
   btnSaveSettings: document.getElementById('btn-save-settings')
@@ -486,10 +484,6 @@ function updateTargetDeviceUI() {
 
   currentSettings.saveToPc = savePc;
   currentSettings.saveToKindle = saveKindle;
-  currentSettings.autoTransfer = saveKindle;
-  if (elements.settingAutoTransfer) {
-    elements.settingAutoTransfer.checked = saveKindle;
-  }
 
   chrome.storage.sync.set({ weeb_kindle_settings: currentSettings }).catch(() => {});
 }
@@ -573,7 +567,6 @@ async function loadSettings() {
   elements.settingSshKeyPath.value = currentSettings.sshKeyPath || '';
   elements.settingRemotePath.value = currentSettings.remotePath;
   elements.settingLocalDownloads.value = currentSettings.localDownloads;
-  elements.settingAutoTransfer.checked = currentSettings.autoTransfer;
   if (elements.settingSkipExisting) {
     elements.settingSkipExisting.checked = currentSettings.skipExisting !== false;
   }
@@ -640,9 +633,8 @@ async function saveSettings() {
     sshKeyPath: elements.settingSshKeyPath.value.trim(),
     remotePath: elements.settingRemotePath.value.trim() || '/mnt/us/koreader/',
     localDownloads: elements.settingLocalDownloads.value.trim() || '~/Downloads',
-    autoTransfer: elements.settingAutoTransfer ? elements.settingAutoTransfer.checked : (elements.targetSaveKindle ? elements.targetSaveKindle.checked : true),
-    saveToPc: elements.targetSavePc ? elements.targetSavePc.checked : true,
-    saveToKindle: elements.settingAutoTransfer ? elements.settingAutoTransfer.checked : (elements.targetSaveKindle ? elements.targetSaveKindle.checked : true)
+    saveToPc: elements.targetSavePc ? elements.targetSavePc.checked : (currentSettings.saveToPc !== false),
+    saveToKindle: elements.targetSaveKindle ? elements.targetSaveKindle.checked : (currentSettings.saveToKindle !== false)
   };
 
   try {
@@ -1513,6 +1505,9 @@ async function startDownloadPipeline() {
   const chaptersToDownload = allChapters.filter(c => selectedChapterIds.has(c.id));
   const format = currentSettings.format;
   const packageMode = currentSettings.packageMode;
+
+  currentSettings.saveToPc = elements.targetSavePc ? elements.targetSavePc.checked : true;
+  currentSettings.saveToKindle = elements.targetSaveKindle ? elements.targetSaveKindle.checked : true;
 
   // Resolve subfolder name
   let targetFolder = currentSettings.folderName || '{title}';

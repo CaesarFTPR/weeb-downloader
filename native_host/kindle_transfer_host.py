@@ -1185,14 +1185,16 @@ def binary_zip_append_filter(target_path, delta_path):
         f_target.write(new_eocd)
         f_target.truncate()
 
-def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_to_pc=True, auto_transfer=False, host='kindle.local', port=2222, user='root', password=None, key_path=None):
+def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_to_pc=True, save_to_kindle=True, auto_transfer=None, host='kindle.local', port=2222, user='root', password=None, key_path=None):
     """
     Appends delta_zip into local_target_cbz on PC via instant binary append (O(delta)) if save_to_pc is True.
     Smartly de-duplicates existing chapter copies and avoids duplicating content.
-    If auto_transfer is True:
+    If save_to_kindle is True:
       - If volume does NOT exist on Kindle, sends initial volume directly.
       - If volume DOES exist on Kindle, sends delta_zip to Kindle and runs merge_volume.lua.
     """
+    if auto_transfer is not None:
+        save_to_kindle = auto_transfer
     exp_target = os.path.expanduser(local_target_cbz)
     exp_delta = os.path.expanduser(delta_zip_path)
 
@@ -1250,7 +1252,7 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
 
     # 2. Sync to Kindle
     kindle_result = None
-    if auto_transfer:
+    if save_to_kindle:
         clean_remote = remote_folder.rstrip('/') if remote_folder else '/mnt/us/koreader'
         filename = os.path.basename(exp_target)
 
@@ -1670,13 +1672,13 @@ def main():
                 delta_zip_path = req.get('delta_zip_path', '')
                 remote_folder = req.get('remote_folder', '')
                 save_to_pc = req.get('save_to_pc', True)
-                auto_transfer = req.get('auto_transfer', False)
+                save_to_kindle = req.get('save_to_kindle', req.get('auto_transfer', True))
                 result = append_to_volume(
                     local_target_cbz,
                     delta_zip_path,
                     remote_folder=remote_folder,
                     save_to_pc=save_to_pc,
-                    auto_transfer=auto_transfer,
+                    save_to_kindle=save_to_kindle,
                     host=host,
                     port=port,
                     user=user,
