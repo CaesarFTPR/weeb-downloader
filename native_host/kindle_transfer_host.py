@@ -624,18 +624,25 @@ def cleanup_empty_dir(folder_path):
     return False
 
 def get_chapter_key(path):
-    s = path.lower()
+    if not path:
+        return ''
     first = path.split('/')[0] if '/' in path else path
-    first_lower = first.lower()
+    first_lower = first.lower().strip()
     if 'cover' in first_lower or 'обложк' in first_lower:
         return 'cover'
-    m = re.search(r'(?:chapter|ch\.?|глава)\s*([\d.]+)', first_lower) or re.search(r'(\d+(?:\.\d+)?)', first_lower)
+    stripped = re.sub(r'^\d+(?:\.\d+)?[\._\-]\s*', '', first_lower).strip()
+    m = (re.search(r'(?:chapter|ch\.?|глава|гл\.?)\s*([\d.]+)', stripped) or
+         re.search(r'(\d+(?:\.\d+)?)', stripped) or
+         re.search(r'(?:chapter|ch\.?|глава|гл\.?)\s*([\d.]+)', first_lower) or
+         re.search(r'(\d+(?:\.\d+)?)', first_lower))
     if m:
         try:
-            return f"ch_{float(m.group(1)):g}"
+            val = m.group(1).rstrip('.')
+            return f"ch_{float(val):g}"
         except Exception:
             pass
-    return re.sub(r'^\d+[\._\-]\s*', '', first_lower).strip()
+    clean = re.sub(r'\s+', '_', stripped or first_lower)
+    return clean
 
 def inspect_volume(volume_path):
     """
@@ -858,9 +865,9 @@ def inspect_remote_volume(host, port, user, remote_cbz_path, password=None, key_
     # Fallback parse from unzip -l
     folders = set()
     for line in out.splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 4:
-            entry_path = parts[-1]
+        parts = line.strip().split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit():
+            entry_path = parts[3]
             if '/' in entry_path:
                 folder = entry_path.split('/')[0]
                 if folder:
@@ -1095,10 +1102,11 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
                             pass
                 if not parsed_json:
                     for il in inspect_lines:
-                        parts = il.split()
-                        if len(parts) >= 4:
-                            entry_path = parts[-1]
-                            k = get_chapter_key(entry_path)
+                        parts = il.strip().split(None, 3)
+                        if len(parts) == 4 and parts[0].isdigit():
+                            entry_path = parts[3]
+                            folder = entry_path.split('/')[0] if '/' in entry_path else entry_path
+                            k = get_chapter_key(folder)
                             if k and k not in ('cover', 'comicinfo.xml', 'toc.ncx'):
                                 kindle_keys.add(k)
         else:
@@ -1621,7 +1629,7 @@ def delete_chapters(target='pc', local_folder='', volume_name='', remote_folder=
                     f"  for f in '{clean_remote}'/*; do "
                     f"    if [ -f \"$f\" ]; then "
                     f"      bf=$(basename \"$f\" | tr '[:upper:]' '[:lower:]'); "
-                    + "".join([f"      if echo \"$bf\" | grep -qi '{k}'; then rm -f \"$f\"; fi; " for k in keys_list[:30]]) +
+                    + "".join([f"      if echo \"$bf\" | grep -E -q -i '(^|[^0-9.]){re.escape(k)}([^0-9.]|$)'; then rm -f \"$f\"; fi; " for k in keys_list[:30]]) +
                     f"    fi; "
                     f"  done; "
                     f"  rmdir '{clean_remote}' 2>/dev/null || true; "

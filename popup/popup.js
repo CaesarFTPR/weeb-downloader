@@ -1203,14 +1203,21 @@ function getChapterKey(name, num) {
     return `ch_${Number.isInteger(n) ? n : n}`;
   }
   if (!name) return '';
-  const s = String(name).toLowerCase();
-  const m = s.match(/(?:chapter|ch\.?|гл\.?|глава)\s*(\d+(?:\.\d+)?)/i) || s.match(/(\d+(?:\.\d+)?)/);
-  if (m) {
-    const n = parseFloat(m[1]);
-    return `ch_${Number.isInteger(n) ? n : n}`;
-  }
+  const s = String(name).toLowerCase().trim();
   if (s.includes('cover') || s.includes('обложк')) return 'cover';
-  return s.replace(/^\d+[\._\-]\s*/, '').trim();
+  const stripped = s.replace(/^\d+(?:\.\d+)?[\._\-]\s*/, '');
+  const m = stripped.match(/(?:chapter|ch\.?|гл\.?|глава)\s*([\d.]+)/i) ||
+            stripped.match(/(\d+(?:\.\d+)?)/) ||
+            s.match(/(?:chapter|ch\.?|гл\.?|глава)\s*([\d.]+)/i) ||
+            s.match(/(\d+(?:\.\d+)?)/);
+  if (m) {
+    const val = m[1].replace(/\.$/, '');
+    const n = parseFloat(val);
+    if (!isNaN(n)) {
+      return `ch_${Number.isInteger(n) ? n : n}`;
+    }
+  }
+  return stripped.replace(/\s+/g, '_') || s.replace(/\s+/g, '_');
 }
 
 /**
@@ -1259,9 +1266,9 @@ async function scanArchivesAndMarkChapters(manualTrigger = false) {
       allChapters.forEach(ch => {
         const keyByName = getChapterKey(ch.name);
         const keyByNum = ch.chapterNumber !== null ? `ch_${Number.isInteger(ch.chapterNumber) ? ch.chapterNumber : ch.chapterNumber}` : '';
-        const hasPc = pcKeys.has(keyByName) || (keyByNum && pcKeys.has(keyByNum));
+        const hasPc = (keyByName && pcKeys.has(keyByName)) || (keyByNum && pcKeys.has(keyByNum));
         const hasKindle = kindleChecked
-          ? (kindleKeys.has(keyByName) || (keyByNum && kindleKeys.has(keyByNum)))
+          ? ((keyByName && kindleKeys.has(keyByName)) || (keyByNum && kindleKeys.has(keyByNum)))
           : Boolean(chapterSourceMap.get(ch.id)?.kindle);
 
         if (hasPc || hasKindle) {
@@ -1826,7 +1833,7 @@ async function executeDeleteChapters(target) {
 
   const selectedChapters = allChapters.filter(c => selectedChapterIds.has(c.id));
   const count = selectedChapters.length;
-  const chapterKeys = selectedChapters.map(c => getChapterKey(c.name || `Chapter ${c.chapterNumber}`));
+  const chapterKeys = selectedChapters.map(c => getChapterKey(c.name, c.chapterNumber));
 
   if (elements.btnConfirmDeletePc) elements.btnConfirmDeletePc.disabled = true;
   if (elements.btnConfirmDeleteKindle) elements.btnConfirmDeleteKindle.disabled = true;

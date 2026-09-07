@@ -1,6 +1,6 @@
 --[[
   merge_volume.lua
-  -- version: 3.1.0
+  -- version: 3.2.0
   True In-Place Binary CBZ Volume Merger for Kindle KOReader using native LuaJIT & libc.
   Time Complexity: O(delta) - appends new chapters in ~0.15s without rewriting existing chapters.
 
@@ -31,16 +31,26 @@ local function get_chapter_key(path)
     if first_lower:find("cover") or first_lower:find("обложк") then
         return "cover"
     end
-    local num = first_lower:match("chapter%s*([%d%.]+)") or
+    -- First strip any leading index prefix (e.g. "08. ", "08.5. ", "08_ ", "08- ")
+    local stripped = first_lower:gsub("^%d+%.?%d*[%._%-]%s*", "")
+    -- Search in stripped first to avoid capturing the index prefix
+    local num = stripped:match("chapter%s*([%d%.]+)") or
+                stripped:match("ch%.?%s*([%d%.]+)") or
+                stripped:match("глава%s*([%d%.]+)") or
+                stripped:match("гл%.?%s*([%d%.]+)") or
+                stripped:match("(%d+%.?%d*)") or
+                first_lower:match("chapter%s*([%d%.]+)") or
                 first_lower:match("ch%.?%s*([%d%.]+)") or
                 first_lower:match("глава%s*([%d%.]+)") or
                 first_lower:match("гл%.?%s*([%d%.]+)") or
                 first_lower:match("(%d+%.?%d*)")
-    if num then
+    if num and #num > 0 then
+        num = num:gsub("%.$", "")
         local n = tonumber(num)
         if n then return "ch_" .. tostring(n) end
     end
-    local clean = first_lower:gsub("^%d+[%._%-]%s*", ""):gsub("%s+", "_")
+    local clean = stripped:gsub("%s+", "_")
+    if clean == "" then clean = first_lower:gsub("%s+", "_") end
     return clean
 end
 

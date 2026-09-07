@@ -712,11 +712,19 @@ function getChapterKey(name) {
   if (!name) return '';
   const s = String(name).toLowerCase().trim();
   if (s.includes('cover') || s.includes('обложк')) return 'cover';
-  const m = s.match(/(?:chapter|ch\.?|глава)\s*([\d.]+)/i) || s.match(/(\d+(?:\.\d+)?)/);
+  const stripped = s.replace(/^\d+(?:\.\d+)?[\._\-]\s*/, '');
+  const m = stripped.match(/(?:chapter|ch\.?|гл\.?|глава)\s*([\d.]+)/i) ||
+            stripped.match(/(\d+(?:\.\d+)?)/) ||
+            s.match(/(?:chapter|ch\.?|гл\.?|глава)\s*([\d.]+)/i) ||
+            s.match(/(\d+(?:\.\d+)?)/);
   if (m) {
-    return `ch_${parseFloat(m[1])}`;
+    const val = m[1].replace(/\.$/, '');
+    const n = parseFloat(val);
+    if (!isNaN(n)) {
+      return `ch_${Number.isInteger(n) ? n : n}`;
+    }
   }
-  return s.replace(/^\d+[\._\-]\s*/, '').replace(/\s+/g, '_');
+  return stripped.replace(/\s+/g, '_') || s.replace(/\s+/g, '_');
 }
 
 /**
@@ -759,6 +767,8 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
 
   // Inspect Kindle's existing volume if saving to Kindle
   let kindleKeys = null;
+  let kindleExistingChapters = [];
+  let kindleExistingPageCount = 0;
   if (saveToKindle) {
     try {
       const scanRes = await sendNativeMessage({
@@ -775,10 +785,23 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
       });
       if (scanRes && scanRes.status === 'success' && scanRes.kindle?.connected) {
         kindleKeys = new Set(scanRes.kindle.chapter_keys || []);
+        if (scanRes.kindle.chapters && scanRes.kindle.chapters.length > 0) {
+          kindleExistingChapters = scanRes.kindle.chapters;
+        }
+        if (scanRes.kindle.total_pages) {
+          kindleExistingPageCount = scanRes.kindle.total_pages;
+        }
       }
     } catch (e) {
       console.warn('[WeebDownloader] Pre-download Kindle scan check:', e);
     }
+  }
+
+  // If saving ONLY to Kindle, load Kindle's existing chapters & page count so
+  // ComicInfo.xml and toc.ncx preserve the full cumulative table of contents on Kindle!
+  if (!saveToPc && saveToKindle && kindleExistingChapters.length > 0) {
+    existingChaptersList = kindleExistingChapters;
+    existingPageCount = kindleExistingPageCount;
   }
 
   // Filter chapters to download based on requested target(s) if skipExisting is enabled:
@@ -844,12 +867,13 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   }
 
   const deltaZip = new JSZip();
-  let globalPageCounter = saveToPc ? existingPageCount : 0;
+  let globalPageCounter = existingPageCount;
   const chapterBookmarks = [];
   const allPagesXml = [];
 
   // If initial volume creation, embed the manga cover poster as page 0
-  if (!existingExists && manga && manga.coverUrl) {
+  const hasExistingContent = Boolean(existingChaptersList && existingChaptersList.length > 0);
+  if (!hasExistingContent && manga && manga.coverUrl) {
     try {
       updateAndBroadcastProgress('Adding manga cover image...', 1);
       const coverData = await fetchImageBytes(tabId, manga.coverUrl);
@@ -910,7 +934,10 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
     const chNum = (chapter.chapterNumber !== undefined && chapter.chapterNumber !== null)
       ? chapter.chapterNumber
       : (chIdx + 1);
-    const folderPrefix = String(Math.floor(chNum)).padStart(2, '0');
+    const nVal = Number(chNum);
+    const folderPrefix = Number.isInteger(nVal)
+      ? String(nVal).padStart(2, '0')
+      : `${String(Math.floor(nVal)).padStart(2, '0')}.${String(chNum).split('.')[1]}`;
     const cleanChTitle = chapter.name || `Глава ${chNum}`;
     const cleanFolderName = `${folderPrefix}. ${sanitizeFilename(cleanChTitle)}`;
 
@@ -941,13 +968,13 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   const mergedBookmarks = [];
   const seenBookmarkKeys = new Set();
 
-  if (existingExists && existingChaptersList.length > 0) {
+  if (existingChaptersList && existingChaptersList.length > 0) {
     for (const folder of existingChaptersList) {
       const k = getChapterKey(folder);
-      if (seenBookmarkKeys.has(k)) continue; // Drop duplicate folder from previous bug!
+      if (seenBookmarkKeys.has(k)) continue;
       seenBookmarkKeys.add(k);
 
-      let cleanTitle = folder.replace(/^\d+[\._\-]\s*/, '');
+      let cleanTitle = folder.replace(/^\d+(?:\.\d+)?[\._\-]\s*/, '');
       if (k === 'cover') cleanTitle = 'Обложка (Cover)';
       mergedBookmarks.push({
         key: k,
@@ -1147,9 +1174,9 @@ async function autoScanArchivesAfterDownload(manga, chaptersList, settings, targ
         const keyByNum = (ch.chapterNumber !== null && ch.chapterNumber !== undefined)
           ? `ch_${Number.isInteger(ch.chapterNumber) ? ch.chapterNumber : ch.chapterNumber}`
           : '';
-        const hasPc = pcKeys.has(keyByName) || (keyByNum && pcKeys.has(keyByNum));
+        const hasPc = (keyByName && pcKeys.has(keyByName)) || (keyByNum && pcKeys.has(keyByNum));
         const hasKindle = kindleChecked
-          ? (kindleKeys.has(keyByName) || (keyByNum && kindleKeys.has(keyByNum)))
+          ? ((keyByName && kindleKeys.has(keyByName)) || (keyByNum && kindleKeys.has(keyByNum)))
           : Boolean(prevSources[ch.id]?.kindle);
 
         if (hasPc || hasKindle) {
