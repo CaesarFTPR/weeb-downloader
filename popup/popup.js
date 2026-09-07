@@ -38,6 +38,10 @@ let cancelRequested = false;
 let hideDownloaded = false;
 let currentReadingProgress = null;
 let savedMangaList = [];
+let browserTabManga = null;
+let browserTabChapters = [];
+const sessionRemovedIds = new Set();
+const sessionMangaCache = new Map();
 let currentSettings = { ...DEFAULT_SETTINGS };
 
 // DOM Elements
@@ -57,9 +61,6 @@ const elements = {
   mangaTitle: document.getElementById('manga-title'),
   mangaTitleTrigger: document.getElementById('manga-title-trigger'),
   mangaSwitchArrow: document.getElementById('manga-switch-arrow'),
-  btnSaveManga: document.getElementById('btn-save-manga'),
-  iconSaveManga: document.getElementById('icon-save-manga'),
-  textSaveManga: document.getElementById('text-save-manga'),
   savedMangaPanel: document.getElementById('saved-manga-panel'),
   savedMangaList: document.getElementById('saved-manga-list'),
   savedMangaCount: document.getElementById('saved-manga-count'),
@@ -214,20 +215,18 @@ function setupEventListeners() {
   if (elements.mangaCoverTrigger) {
     elements.mangaCoverTrigger.addEventListener('click', () => toggleSavedMangaPanel());
   }
-  if (elements.btnSaveManga) {
-    elements.btnSaveManga.addEventListener('click', addCurrentMangaToSaved);
-  }
   if (elements.btnCloseSavedPanel) {
     elements.btnCloseSavedPanel.addEventListener('click', () => toggleSavedMangaPanel(false));
   }
   if (elements.savedMangaList) {
-    elements.savedMangaList.addEventListener('click', (e) => {
-      const delBtn = e.target.closest('.btn-delete-saved');
-      if (delBtn) {
+    elements.savedMangaList.addEventListener('click', async (e) => {
+      const toggleBtn = e.target.closest('.btn-save-manga-toggle');
+      if (toggleBtn) {
         e.stopPropagation();
-        const seriesId = delBtn.dataset.seriesId;
+        e.preventDefault();
+        const seriesId = toggleBtn.dataset.seriesId;
         if (seriesId) {
-          removeMangaFromSaved(seriesId, e);
+          await toggleMangaSavedState(seriesId);
         }
         return;
       }
@@ -235,7 +234,7 @@ function setupEventListeners() {
       if (itemEl) {
         const seriesId = itemEl.dataset.seriesId;
         if (seriesId) {
-          switchToSavedManga(seriesId);
+          await switchToSavedManga(seriesId);
         }
       }
     });
@@ -248,9 +247,8 @@ function setupEventListeners() {
     const clickedPanel = elements.savedMangaPanel.contains(e.target);
     const clickedTitle = elements.mangaTitleTrigger && elements.mangaTitleTrigger.contains(e.target);
     const clickedCover = elements.mangaCoverTrigger && elements.mangaCoverTrigger.contains(e.target);
-    const clickedSave = elements.btnSaveManga && elements.btnSaveManga.contains(e.target);
 
-    if (!clickedPanel && !clickedTitle && !clickedCover && !clickedSave) {
+    if (!clickedPanel && !clickedTitle && !clickedCover) {
       toggleSavedMangaPanel(false);
     }
   });
@@ -555,6 +553,11 @@ async function loadSavedMangaList() {
   try {
     const data = await chrome.storage.local.get(['saved_manga_list']);
     savedMangaList = Array.isArray(data.saved_manga_list) ? data.saved_manga_list : [];
+    savedMangaList.forEach(item => {
+      if (item && item.seriesId) {
+        sessionMangaCache.set(item.seriesId, item);
+      }
+    });
     updateSaveButtonState();
   } catch (err) {
     console.warn('Failed to load saved manga list:', err);
@@ -563,103 +566,87 @@ async function loadSavedMangaList() {
 }
 
 /**
- * Update the state of the "Add to list" button
+ * Update the state of the library dropdown if open
  */
 function updateSaveButtonState() {
-  if (!elements.btnSaveManga) return;
-  if (!currentManga || !currentManga.seriesId) {
-    elements.btnSaveManga.disabled = true;
-    if (elements.iconSaveManga) elements.iconSaveManga.textContent = '🔖';
-    if (elements.textSaveManga) elements.textSaveManga.textContent = 'В список';
-    elements.btnSaveManga.classList.remove('is-saved');
-    elements.btnSaveManga.title = 'Откройте или выберите мангу';
-    return;
-  }
-
-  elements.btnSaveManga.disabled = false;
-  const isSaved = savedMangaList.some(item => item.seriesId === currentManga.seriesId);
-  if (isSaved) {
-    elements.btnSaveManga.classList.add('is-saved');
-    if (elements.iconSaveManga) elements.iconSaveManga.textContent = '✓';
-    if (elements.textSaveManga) elements.textSaveManga.textContent = 'В списке';
-    elements.btnSaveManga.title = 'Манга сохранена в вашем списке (нажмите для просмотра)';
-  } else {
-    elements.btnSaveManga.classList.remove('is-saved');
-    if (elements.iconSaveManga) elements.iconSaveManga.textContent = '🔖';
-    if (elements.textSaveManga) elements.textSaveManga.textContent = 'В список';
-    elements.btnSaveManga.title = 'Добавить эту мангу в быстрый список';
-  }
-}
-
-/**
- * Add or update current manga in the saved library
- */
-async function addCurrentMangaToSaved() {
-  if (!currentManga || !currentManga.seriesId) {
-    showBanner('Сначала откройте или выберите мангу', 'info');
-    return;
-  }
-
-  const existingIdx = savedMangaList.findIndex(item => item.seriesId === currentManga.seriesId);
-  if (existingIdx !== -1) {
-    // Already in list -> update chapters, cover, and timestamp
-    savedMangaList[existingIdx] = {
-      ...savedMangaList[existingIdx],
-      title: currentManga.title || savedMangaList[existingIdx].title,
-      coverUrl: currentManga.coverUrl || savedMangaList[existingIdx].coverUrl,
-      url: currentManga.currentUrl || savedMangaList[existingIdx].url,
-      chapterCount: allChapters.length || savedMangaList[existingIdx].chapterCount,
-      chapters: (allChapters && allChapters.length > 0) ? allChapters : savedMangaList[existingIdx].chapters,
-      updatedAt: Date.now()
-    };
-    await chrome.storage.local.set({
-      saved_manga_list: savedMangaList,
-      last_active_series_id: currentManga.seriesId
-    });
-    updateSaveButtonState();
-    showBanner(`«${currentManga.title}» уже в списке (данные обновлены)`, 'info', 2000);
-    toggleSavedMangaPanel(true);
-    return;
-  }
-
-  const newEntry = {
-    seriesId: currentManga.seriesId,
-    title: currentManga.title || 'Untitled Manga',
-    coverUrl: currentManga.coverUrl || '../icons/icon128.png',
-    url: currentManga.currentUrl || '',
-    chapterCount: (allChapters && allChapters.length) || 0,
-    chapters: allChapters || [],
-    savedAt: Date.now()
-  };
-
-  savedMangaList.unshift(newEntry);
-  await chrome.storage.local.set({
-    saved_manga_list: savedMangaList,
-    last_active_series_id: currentManga.seriesId
-  });
-  updateSaveButtonState();
-  showBanner(`«${newEntry.title}» добавлена в список!`, 'success', 2500);
-
   if (elements.savedMangaPanel && !elements.savedMangaPanel.classList.contains('hidden')) {
     renderSavedMangaList();
   }
 }
 
 /**
- * Remove a manga series from saved list
+ * Toggle saved state of a manga series (Add or Remove)
+ * Removed manga remains visible in the list until popup is closed and reopened.
  */
-async function removeMangaFromSaved(seriesId, e) {
-  if (e) e.stopPropagation();
+async function toggleMangaSavedState(seriesId) {
+  if (!seriesId) return;
 
-  const mangaToRemove = savedMangaList.find(m => m.seriesId === seriesId);
-  const title = mangaToRemove ? mangaToRemove.title : 'Манга';
+  const isSavedInStorage = savedMangaList.some(m => m.seriesId === seriesId);
+  const isCurrentlySaved = isSavedInStorage && !sessionRemovedIds.has(seriesId);
 
-  savedMangaList = savedMangaList.filter(item => item.seriesId !== seriesId);
-  await chrome.storage.local.set({ saved_manga_list: savedMangaList });
+  if (isCurrentlySaved) {
+    // Remove from saved list
+    const itemToRemove = savedMangaList.find(m => m.seriesId === seriesId) || sessionMangaCache.get(seriesId);
+    if (itemToRemove) {
+      sessionMangaCache.set(seriesId, itemToRemove);
+    }
+    savedMangaList = savedMangaList.filter(m => m.seriesId !== seriesId);
+    sessionRemovedIds.add(seriesId);
 
-  updateSaveButtonState();
-  renderSavedMangaList();
-  showBanner(`«${title}» удалена из списка`, 'info', 2000);
+    await chrome.storage.local.set({ saved_manga_list: savedMangaList });
+    showBanner(`«${itemToRemove?.title || 'Манга'}» удалена из списка`, 'info', 2500);
+    renderSavedMangaList();
+  } else {
+    // Add or restore to saved list
+    sessionRemovedIds.delete(seriesId);
+
+    let source = sessionMangaCache.get(seriesId);
+    if (!source && browserTabManga && browserTabManga.seriesId === seriesId) {
+      source = {
+        ...browserTabManga,
+        chapterCount: (browserTabChapters && browserTabChapters.length) || 0,
+        chapters: browserTabChapters || []
+      };
+    }
+    if (!source && currentManga && currentManga.seriesId === seriesId) {
+      source = {
+        ...currentManga,
+        chapterCount: (allChapters && allChapters.length) || 0,
+        chapters: allChapters || []
+      };
+    }
+
+    if (!source) {
+      showBanner('Не удалось найти данные манги для сохранения', 'error', 3000);
+      return;
+    }
+
+    const newEntry = {
+      seriesId: source.seriesId,
+      title: source.title || 'Untitled Manga',
+      coverUrl: source.coverUrl || '../icons/icon128.png',
+      url: source.url || source.currentUrl || '',
+      chapterCount: (source.chapters && source.chapters.length) || source.chapterCount || 0,
+      chapters: source.chapters || [],
+      savedAt: Date.now()
+    };
+
+    sessionMangaCache.set(seriesId, newEntry);
+
+    const existingIdx = savedMangaList.findIndex(m => m.seriesId === seriesId);
+    if (existingIdx !== -1) {
+      savedMangaList[existingIdx] = newEntry;
+    } else {
+      savedMangaList.push(newEntry);
+    }
+
+    await chrome.storage.local.set({
+      saved_manga_list: savedMangaList,
+      last_active_series_id: seriesId
+    });
+    showBanner(`«${newEntry.title}» добавлена в список!`, 'success', 2500);
+    renderSavedMangaList();
+  }
 }
 
 /**
@@ -686,28 +673,91 @@ function toggleSavedMangaPanel(forceState) {
 }
 
 /**
- * Render the list of saved manga in the dropdown panel
+ * Render the list of saved manga in the dropdown panel:
+ * 1. Active browser tab manga pinned at the top.
+ * 2. All other manga sorted alphabetically A-Z.
+ * 3. Deleted manga remains visible in the list during the session, allowing instant undo / restore.
  */
 function renderSavedMangaList() {
   if (!elements.savedMangaList) return;
 
+  const activeSavedCount = savedMangaList.filter(m => m && m.seriesId && !sessionRemovedIds.has(m.seriesId)).length;
   if (elements.savedMangaCount) {
-    elements.savedMangaCount.textContent = savedMangaList.length;
+    elements.savedMangaCount.textContent = activeSavedCount;
   }
 
-  if (savedMangaList.length === 0) {
+  // 1. Pinned browser tab manga
+  let pinnedItem = null;
+  if (browserTabManga && browserTabManga.seriesId) {
+    const isSavedInStorage = savedMangaList.some(m => m.seriesId === browserTabManga.seriesId);
+    const isSaved = isSavedInStorage && !sessionRemovedIds.has(browserTabManga.seriesId);
+    const count = (browserTabChapters && browserTabChapters.length) || browserTabManga.chapterCount || 0;
+
+    pinnedItem = {
+      ...browserTabManga,
+      chapterCount: count,
+      isBrowserTab: true,
+      isSaved: isSaved,
+      isCurrent: currentManga && currentManga.seriesId === browserTabManga.seriesId
+    };
+    sessionMangaCache.set(browserTabManga.seriesId, pinnedItem);
+  }
+
+  // 2. Build other items
+  const otherItemsMap = new Map();
+
+  savedMangaList.forEach(item => {
+    if (!item || !item.seriesId) return;
+    if (pinnedItem && item.seriesId === pinnedItem.seriesId) return;
+
+    const isSaved = !sessionRemovedIds.has(item.seriesId);
+    otherItemsMap.set(item.seriesId, {
+      ...item,
+      isBrowserTab: false,
+      isSaved: isSaved,
+      isCurrent: currentManga && currentManga.seriesId === item.seriesId
+    });
+    sessionMangaCache.set(item.seriesId, item);
+  });
+
+  // Include any items removed during this session so user can restore them
+  sessionRemovedIds.forEach(id => {
+    if (pinnedItem && id === pinnedItem.seriesId) return;
+    if (!otherItemsMap.has(id) && sessionMangaCache.has(id)) {
+      const cached = sessionMangaCache.get(id);
+      otherItemsMap.set(id, {
+        ...cached,
+        isBrowserTab: false,
+        isSaved: false,
+        isCurrent: currentManga && currentManga.seriesId === id
+      });
+    }
+  });
+
+  // 3. Sort other items alphabetically A-Z
+  const otherItems = Array.from(otherItemsMap.values());
+  otherItems.sort((a, b) => {
+    const titleA = (a.title || '').trim().toLowerCase();
+    const titleB = (b.title || '').trim().toLowerCase();
+    return titleA.localeCompare(titleB, undefined, { sensitivity: 'base' });
+  });
+
+  // 4. Combine pinned item + sorted items
+  const itemsToRender = pinnedItem ? [pinnedItem, ...otherItems] : otherItems;
+
+  if (itemsToRender.length === 0) {
     elements.savedMangaList.innerHTML = `
       <div class="saved-manga-empty">
         <span class="empty-icon">📚</span>
         <p>Ваш список сохранённых серий пуст</p>
-        <p class="empty-hint">Нажмите кнопку <strong>«В список»</strong> рядом с названием манги, чтобы быстро переключаться на неё в любой момент.</p>
+        <p class="empty-hint">Откройте страницу манги на WeebCentral в браузере, и она появится здесь с возможностью добавить её в библиотеку.</p>
       </div>
     `;
     return;
   }
 
-  const itemsHtml = savedMangaList.map(item => {
-    const isCurrent = currentManga && currentManga.seriesId === item.seriesId;
+  // 5. Build HTML
+  const itemsHtml = itemsToRender.map(item => {
     const count = item.chapterCount || (item.chapters && item.chapters.length) || 0;
     const thumbUrl = item.coverUrl || '../icons/icon128.png';
     const escapedTitle = (item.title || 'Untitled')
@@ -716,18 +766,38 @@ function renderSavedMangaList() {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
 
+    const isBrowserPinned = item.isBrowserTab;
+    const isSaved = item.isSaved;
+    const isCurrent = item.isCurrent;
+    const isRemoved = !isSaved;
+
+    const classes = [
+      'saved-manga-item',
+      isCurrent ? 'active' : '',
+      isBrowserPinned ? 'pinned-browser' : '',
+      isRemoved ? 'is-removed' : ''
+    ].filter(Boolean).join(' ');
+
     return `
-      <div class="saved-manga-item ${isCurrent ? 'active' : ''}" data-series-id="${item.seriesId}">
+      <div class="${classes}" data-series-id="${item.seriesId}">
         <img class="saved-item-thumb" src="${thumbUrl}" alt="Cover" onerror="this.src='../icons/icon128.png'">
         <div class="saved-item-meta">
           <div class="saved-item-title" title="${escapedTitle}">${escapedTitle}</div>
           <div class="saved-item-sub">
             <span>${count} глав</span>
+            ${isBrowserPinned ? '<span class="saved-badge-browser" title="Страница открыта во вкладке браузера">🌐 В браузере</span>' : ''}
             ${isCurrent ? '<span class="saved-active-badge">Текущая</span>' : ''}
+            ${isRemoved ? '<span class="saved-badge-removed">Удалена</span>' : ''}
           </div>
         </div>
-        <button class="btn-delete-saved" type="button" data-series-id="${item.seriesId}" title="Удалить из списка">
-          🗑️
+        <button class="btn-save-manga btn-save-manga-toggle ${isSaved ? 'is-saved' : 'is-not-saved'}" 
+                type="button" 
+                data-series-id="${item.seriesId}" 
+                title="${isSaved ? 'Удалить из списка (останется до закрытия)' : 'Добавить в список сохранённых'}">
+          ${isSaved 
+            ? '<span class="save-status-normal">✓ В списке</span><span class="save-status-hover">✕ Удалить</span>' 
+            : '<span>+ В список</span>'
+          }
         </button>
       </div>
     `;
@@ -737,7 +807,7 @@ function renderSavedMangaList() {
 }
 
 /**
- * Switch active manga series to a saved one
+ * Switch active manga series to a saved or browser one
  */
 async function switchToSavedManga(seriesId, silent = false) {
   if (isDownloading) {
@@ -745,7 +815,9 @@ async function switchToSavedManga(seriesId, silent = false) {
     return;
   }
 
-  const target = savedMangaList.find(m => m.seriesId === seriesId);
+  const target = savedMangaList.find(m => m.seriesId === seriesId)
+              || (browserTabManga && browserTabManga.seriesId === seriesId ? browserTabManga : null)
+              || sessionMangaCache.get(seriesId);
   if (!target) return;
 
   toggleSavedMangaPanel(false);
@@ -758,7 +830,7 @@ async function switchToSavedManga(seriesId, silent = false) {
     seriesId: target.seriesId,
     title: target.title,
     coverUrl: target.coverUrl,
-    currentUrl: target.url || ''
+    currentUrl: target.url || target.currentUrl || ''
   };
 
   elements.mangaTitle.textContent = currentManga.title;
@@ -803,7 +875,6 @@ async function switchToSavedManga(seriesId, silent = false) {
 
   updateSelectionBadge();
   renderChapterList();
-  updateSaveButtonState();
 
   // Save last active series
   chrome.storage.local.set({ last_active_series_id: currentManga.seriesId }).catch(() => {});
@@ -1082,6 +1153,15 @@ async function initPageDetection() {
       const data = cached[cacheKey];
       currentManga = data.manga;
       allChapters = data.chapters;
+      browserTabManga = currentManga;
+      browserTabChapters = allChapters;
+      if (browserTabManga && browserTabManga.seriesId) {
+        sessionMangaCache.set(browserTabManga.seriesId, {
+          ...browserTabManga,
+          chapterCount: browserTabChapters.length,
+          chapters: browserTabChapters
+        });
+      }
       elements.mangaTitle.textContent = currentManga.title;
       elements.mangaTitle.title = currentManga.title;
       if (currentManga.coverUrl) {
@@ -1180,6 +1260,15 @@ async function loadMangaAndChapters(tabId) {
   }
 
   allChapters = chaptersRes.data;
+  browserTabManga = currentManga;
+  browserTabChapters = allChapters;
+  if (browserTabManga && browserTabManga.seriesId) {
+    sessionMangaCache.set(browserTabManga.seriesId, {
+      ...browserTabManga,
+      chapterCount: browserTabChapters.length,
+      chapters: browserTabChapters
+    });
+  }
   elements.chapterCountBadge.textContent = `${allChapters.length} chapters`;
 
   // 3. Load previously saved downloaded chapters from storage (without polling PC or Kindle)

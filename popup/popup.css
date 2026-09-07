@@ -269,6 +269,8 @@ body {
   border-radius: 4px;
   padding: 1px 4px 1px 0;
   transition: opacity 0.15s;
+  flex: 1;
+  min-width: 0;
 }
 
 .manga-title-wrapper:hover .manga-title {
@@ -300,14 +302,17 @@ body {
 .btn-save-manga {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   white-space: nowrap;
   flex-shrink: 0;
-  padding: 3px 8px;
+  padding: 3px 9px;
   font-size: 11px;
   font-weight: 500;
   border-radius: 12px;
   transition: all 0.2s ease;
+  cursor: pointer;
+  border: 1px solid transparent;
 }
 
 .btn-save-manga.is-saved {
@@ -317,8 +322,37 @@ body {
 }
 
 .btn-save-manga.is-saved:hover {
-  background: rgba(16, 185, 129, 0.25);
-  border-color: rgba(16, 185, 129, 0.6);
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+
+.btn-save-manga .save-status-normal {
+  display: inline;
+}
+
+.btn-save-manga .save-status-hover {
+  display: none;
+}
+
+.btn-save-manga.is-saved:hover .save-status-normal {
+  display: none;
+}
+
+.btn-save-manga.is-saved:hover .save-status-hover {
+  display: inline;
+}
+
+.btn-save-manga.is-not-saved {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--text-secondary);
+}
+
+.btn-save-manga.is-not-saved:hover {
+  background: rgba(16, 185, 129, 0.2);
+  border-color: rgba(16, 185, 129, 0.5);
+  color: #6ee7b7;
 }
 
 /* Saved Manga Dropdown Panel */
@@ -396,7 +430,8 @@ body {
   padding: 8px 14px;
   border-bottom: 1px solid rgba(51, 65, 85, 0.25);
   cursor: pointer;
-  transition: background-color 0.15s;
+  transition: background-color 0.15s, opacity 0.2s;
+  position: relative;
 }
 
 .saved-manga-item:hover {
@@ -409,6 +444,27 @@ body {
   padding-left: 11px;
 }
 
+/* Pinned active browser manga */
+.saved-manga-item.pinned-browser {
+  background-color: rgba(30, 41, 59, 0.65);
+  border-bottom: 2px solid rgba(99, 102, 241, 0.4);
+}
+
+.saved-manga-item.pinned-browser:hover {
+  background-color: rgba(99, 102, 241, 0.18);
+}
+
+/* Temporarily removed in current session */
+.saved-manga-item.is-removed {
+  opacity: 0.55;
+  background-color: rgba(15, 23, 42, 0.35);
+}
+
+.saved-manga-item.is-removed:hover {
+  opacity: 0.85;
+  background-color: rgba(239, 68, 68, 0.08);
+}
+
 .saved-item-thumb {
   width: 32px;
   height: 44px;
@@ -417,6 +473,11 @@ body {
   border: 1px solid var(--border-color);
   background-color: var(--bg-secondary);
   flex-shrink: 0;
+  transition: filter 0.2s ease;
+}
+
+.saved-manga-item.is-removed .saved-item-thumb {
+  filter: grayscale(80%);
 }
 
 .saved-item-meta {
@@ -442,6 +503,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .saved-active-badge {
@@ -455,23 +517,31 @@ body {
   letter-spacing: 0.3px;
 }
 
-.btn-delete-saved {
-  opacity: 0.6;
-  padding: 4px 6px;
-  font-size: 13px;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  color: var(--text-muted);
+.saved-badge-browser {
+  font-size: 9px;
+  padding: 1px 5px;
   border-radius: 4px;
-  transition: all 0.15s ease;
-  flex-shrink: 0;
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
 }
 
-.btn-delete-saved:hover {
-  opacity: 1;
-  color: #f87171;
-  background-color: rgba(239, 68, 68, 0.15);
+.saved-badge-removed {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.btn-save-manga-toggle {
+  min-width: 82px;
 }
 
 .saved-manga-empty {
