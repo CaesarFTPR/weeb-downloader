@@ -104,11 +104,6 @@ const elements = {
   labelTargetKindle: document.getElementById('label-target-kindle'),
   destinationBarContainer: document.getElementById('destination-bar-container'),
 
-  // Kindle Transfer Card
-  btnTransferKindle: document.getElementById('btn-transfer-kindle'),
-  btnCopyScp: document.getElementById('btn-copy-scp'),
-  transferStatus: document.getElementById('transfer-status'),
-
   // Destination Picker
   destinationPathDisplay: document.getElementById('destination-path-display'),
   btnBrowseDestination: document.getElementById('btn-browse-destination'),
@@ -263,10 +258,6 @@ function setupEventListeners() {
     chrome.runtime.sendMessage({ action: 'CANCEL_DOWNLOAD_PIPELINE' });
     showBanner('Cancelling download...', 'info');
   });
-
-  // Kindle Actions
-  elements.btnTransferKindle.addEventListener('click', transferToKindle);
-  elements.btnCopyScp.addEventListener('click', copyScpCommand);
 
   // Delete Actions
   if (elements.btnDeleteSelected) {
@@ -1576,97 +1567,6 @@ function sanitizeFilename(name) {
 
 /**
  * Kindle SSH Transfer
- */
-async function transferToKindle() {
-  let targetFolder = currentSettings.folderName || '{title}';
-  if (currentManga) {
-    targetFolder = targetFolder.replace('{title}', currentManga.title).trim();
-  }
-  targetFolder = sanitizeFilename(targetFolder);
-
-  const localBase = currentSettings.localDownloads.replace(/\/+$/, '');
-  const localFullPath = `${localBase}/${targetFolder}`;
-  const volumeName = `${sanitizeFilename(currentManga?.title || targetFolder)}.${currentSettings.format || 'cbz'}`;
-
-  // For cumulative tome, target the single .cbz file directly
-  const pathToSend = (currentSettings.packageMode === 'cumulative_tome')
-    ? `${localFullPath}/${volumeName}`
-    : localFullPath;
-
-  elements.transferStatus.classList.remove('hidden');
-  elements.transferStatus.textContent = '🚀 Initiating Kindle transfer via SCP...';
-  elements.transferStatus.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  elements.btnTransferKindle.disabled = true;
-  const originalBtnHtml = elements.btnTransferKindle.innerHTML;
-  elements.btnTransferKindle.innerHTML = '⏳ Transferring to Kindle...';
-
-  try {
-    const response = await chrome.runtime.sendMessage({
-      action: 'TRANSFER_TO_KINDLE',
-      host: currentSettings.sshHost,
-      port: currentSettings.sshPort,
-      user: currentSettings.sshUser,
-      password: currentSettings.sshPassword,
-      keyPath: currentSettings.sshKeyPath,
-      localPath: pathToSend,
-      remotePath: currentSettings.remotePath
-    });
-
-    if (response && response.success && response.result) {
-      if (response.result.status === 'success') {
-        elements.transferStatus.textContent = `✅ ${response.result.message}`;
-        showBanner('Manga transferred to Kindle!', 'success');
-        scanArchivesAndMarkChapters(false);
-      } else {
-        elements.transferStatus.textContent = `❌ ${response.result.message}`;
-        showBanner('Transfer error (check Native Host / SSH)', 'error');
-      }
-    } else {
-      const err = response?.error || 'Native Messaging Host not reachable. Run ./native_host/install.sh';
-      elements.transferStatus.textContent = `⚠️ ${err}`;
-      showBanner('Kindle host not detected', 'error');
-    }
-    elements.transferStatus.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  } catch (err) {
-    elements.transferStatus.textContent = `Error: ${err.message}`;
-  } finally {
-    elements.btnTransferKindle.disabled = false;
-    elements.btnTransferKindle.innerHTML = originalBtnHtml;
-  }
-}
-
-/**
- * Copy SCP command to clipboard
- */
-function copyScpCommand() {
-  let targetFolder = currentSettings.folderName || '{title}';
-  if (currentManga) {
-    targetFolder = targetFolder.replace('{title}', currentManga.title).trim();
-  }
-  targetFolder = sanitizeFilename(targetFolder);
-
-  const localBase = currentSettings.localDownloads.replace(/\/+$/, '');
-  const localFullPath = `${localBase}/${targetFolder}`;
-  const volumeName = `${sanitizeFilename(currentManga?.title || targetFolder)}.${currentSettings.format || 'cbz'}`;
-  const cleanRemote = (currentSettings.remotePath || '/mnt/us/koreader/').replace(/\/+$/, '');
-
-  let scpCmd;
-  if (currentSettings.packageMode === 'cumulative_tome') {
-    // Single volume mode: copy the .cbz directly to KOReader's manga folder without creating subfolder
-    scpCmd = `scp -P ${currentSettings.sshPort} "${localFullPath}/${volumeName}" ${currentSettings.sshUser}@${currentSettings.sshHost}:${cleanRemote}/`;
-  } else {
-    scpCmd = `scp -r -P ${currentSettings.sshPort} "${localFullPath}" ${currentSettings.sshUser}@${currentSettings.sshHost}:${currentSettings.remotePath}`;
-  }
-
-  navigator.clipboard.writeText(scpCmd).then(() => {
-    showBanner('📋 SCP command copied to clipboard!', 'success');
-    elements.transferStatus.classList.remove('hidden');
-    elements.transferStatus.textContent = `Copied: ${scpCmd}`;
-  }).catch(() => {
-    showBanner('Could not copy command to clipboard.', 'error');
-  });
-}
-
 /**
  * Test SSH Connection in Settings
  */

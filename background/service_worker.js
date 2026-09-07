@@ -435,9 +435,18 @@ async function handleStartDownloadPipeline(payload) {
               { isCompleted: true }
             );
           }
+        } else if (packageMode === 'cumulative_tome' || packageMode === 'single_volume') {
+          downloadState.isCompleted = true;
+          // In cumulative tome mode, downloadCumulativeTome has already broadcast its specific final progress message
         } else {
           downloadState.isCompleted = true;
-          updateAndBroadcastProgress(`🎉 Download complete! Saved to ${displayBase}/`, 100, { isCompleted: true });
+          if (!saveToPc && saveToKindle) {
+            updateAndBroadcastProgress('🎉 Download complete! Synced to Kindle!', 100, { isCompleted: true });
+          } else if (saveToPc && !saveToKindle) {
+            updateAndBroadcastProgress(`🎉 Download complete! Saved to ${displayBase}/`, 100, { isCompleted: true });
+          } else {
+            updateAndBroadcastProgress('🎉 Download complete! Saved to PC & Kindle!', 100, { isCompleted: true });
+          }
         }
 
         // Automatically scan archives on PC and Kindle upon download completion
@@ -741,31 +750,65 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   const storedSources = await chrome.storage.local.get(sourcesKey).catch(() => ({}));
   const sourceMap = storedSources[sourcesKey] || {};
 
-  // Filter chapters to download based on requested target(s):
+  // Inspect Kindle's existing volume if saving to Kindle
+  let kindleKeys = null;
+  if (saveToKindle) {
+    try {
+      const scanRes = await sendNativeMessage({
+        action: 'scan_archives',
+        local_folder: downloadPaths.desiredDir,
+        volume_name: volumeName,
+        remote_folder: `${settings.remotePath.replace(/\/+$/, '')}/${sanitizeFilename(manga.title)}`,
+        remote_base: settings.remotePath.replace(/\/+$/, ''),
+        host: settings.sshHost,
+        port: settings.sshPort,
+        user: settings.sshUser,
+        password: settings.sshPassword,
+        key_path: settings.sshKeyPath
+      });
+      if (scanRes && scanRes.status === 'success' && scanRes.kindle?.connected) {
+        kindleKeys = new Set(scanRes.kindle.chapter_keys || []);
+      }
+    } catch (e) {
+      console.warn('[WeebDownloader] Pre-download Kindle scan check:', e);
+    }
+  }
+
+  // Filter chapters to download based on requested target(s) if skipExisting is enabled:
   // - If saving only to Kindle: only skip if already present on Kindle
   // - If saving only to PC: only skip if already present on PC (or in local volume)
   // - If saving to both: only skip if present on both PC and Kindle
   const chaptersToDownload = [];
   const skippedChapters = [];
-  for (const ch of chapters) {
-    const key = getChapterKey(ch.name || `Chapter ${ch.chapterNumber}`);
-    const onPc = existingKeys.has(key) || Boolean(sourceMap[ch.id]?.pc);
-    const onKindle = Boolean(sourceMap[ch.id]?.kindle);
 
-    let alreadyHas = false;
-    if (saveToPc && saveToKindle) {
-      alreadyHas = onPc && onKindle;
-    } else if (saveToPc) {
-      alreadyHas = onPc;
-    } else if (saveToKindle) {
-      alreadyHas = onKindle;
-    }
+  if (settings.skipExisting !== false) {
+    for (const ch of chapters) {
+      const key = getChapterKey(ch.name || `Chapter ${ch.chapterNumber}`);
+      const keyByNum = (ch.chapterNumber !== null && ch.chapterNumber !== undefined)
+        ? `ch_${Number.isInteger(ch.chapterNumber) ? ch.chapterNumber : ch.chapterNumber}`
+        : '';
+      const onPc = existingKeys.has(key) || (keyByNum && existingKeys.has(keyByNum)) || Boolean(sourceMap[ch.id]?.pc);
+      const onKindle = kindleKeys
+        ? (kindleKeys.has(key) || (keyByNum && kindleKeys.has(keyByNum)))
+        : Boolean(sourceMap[ch.id]?.kindle);
 
-    if (alreadyHas) {
-      skippedChapters.push(ch);
-    } else {
-      chaptersToDownload.push(ch);
+      let alreadyHas = false;
+      if (saveToPc && saveToKindle) {
+        alreadyHas = onPc && onKindle;
+      } else if (saveToPc) {
+        alreadyHas = onPc;
+      } else if (saveToKindle) {
+        alreadyHas = onKindle;
+      }
+
+      if (alreadyHas) {
+        skippedChapters.push(ch);
+      } else {
+        chaptersToDownload.push(ch);
+      }
     }
+  } else {
+    chaptersToDownload.push(...chapters);
   }
 
   // If all selected chapters already exist on the target destination:
@@ -985,7 +1028,6 @@ ${navPointsXml}
       remote_folder: remoteFolder,
       save_to_pc: saveToPc,
       save_to_kindle: saveToKindle,
-      auto_transfer: saveToKindle,
       host: settings.sshHost,
       port: settings.sshPort,
       user: settings.sshUser,
@@ -1001,21 +1043,21 @@ ${navPointsXml}
       const kindleMsg = mergeRes.kindle_result?.message ? ` (${mergeRes.kindle_result.message})` : '';
 
       if (!saveToPc && kindleSuccess) {
-        updateAndBroadcastProgress(`🎉 Synced directly to Kindle (${volumeName})!`, 100);
+        updateAndBroadcastProgress(`🎉 Synced directly to Kindle (${volumeName})!`, 100, { isCompleted: true });
       } else if (!saveToPc && !kindleSuccess) {
         const errDetail = mergeRes.kindle_result?.message || 'Kindle sync failed';
-        updateAndBroadcastProgress(`⚠️ Kindle sync failed: ${errDetail}`, 100, { error: errDetail });
+        updateAndBroadcastProgress(`⚠️ Kindle sync failed: ${errDetail}`, 100, { error: errDetail, isCompleted: true });
       } else if (saveToKindle && !kindleSuccess) {
         const errDetail = mergeRes.kindle_result?.message || 'Kindle sync failed';
-        updateAndBroadcastProgress(`Saved to PC, but Kindle sync failed: ${errDetail}`, 100, { error: errDetail });
+        updateAndBroadcastProgress(`Saved to PC, but Kindle sync failed: ${errDetail}`, 100, { error: errDetail, isCompleted: true });
       } else if (saveToKindle) {
-        updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName}!${kindleMsg}`, 100);
+        updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName}!${kindleMsg}`, 100, { isCompleted: true });
       } else {
-        updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName} on PC!`, 100);
+        updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName} on PC!`, 100, { isCompleted: true });
       }
     } else {
       console.warn('[WeebDownloader] Merge warning:', mergeRes);
-      updateAndBroadcastProgress(`Tome update failed: ${mergeRes?.message || 'Native host error'}`, 100, { error: mergeRes?.message });
+      updateAndBroadcastProgress(`Tome update failed: ${mergeRes?.message || 'Native host error'}`, 100, { error: mergeRes?.message, isCompleted: true });
     }
 
     if (pcSuccess || kindleSuccess) {

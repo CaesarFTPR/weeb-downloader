@@ -17,6 +17,49 @@ import tarfile
 import zipfile
 import re
 import xml.etree.ElementTree as ET
+import time
+
+LOG_FILE = '/tmp/weeb_host.log'
+
+def log_debug(msg):
+    """Append debug entry to /tmp/weeb_host.log."""
+    try:
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            t = time.strftime('%Y-%m-%d %H:%M:%S')
+            f.write(f'[{t}] {msg}\n')
+    except Exception:
+        pass
+
+def stage_file_to_tmp(file_path):
+    """Safely stages a file to /tmp, using Finder osascript fallback for macOS TCC if direct copy fails."""
+    exp = os.path.expanduser(file_path)
+    if not os.path.exists(exp):
+        return None
+    if os.path.abspath(exp).startswith('/tmp/'):
+        return exp
+    base = os.path.basename(exp)
+    tmp_dst = os.path.join('/tmp', f"weeb_{int(time.time())}_{base}")
+    try:
+        shutil.copyfile(exp, tmp_dst)
+        if os.path.exists(tmp_dst):
+            return tmp_dst
+    except Exception:
+        pass
+    finder_script = f'''
+tell application "Finder"
+    set src to POSIX file "{exp}" as alias
+    set dst to POSIX file "/tmp" as alias
+    duplicate src to dst with replacing
+end tell
+'''
+    try:
+        res = subprocess.run(['osascript', '-e', finder_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+        raw_tmp = os.path.join('/tmp', base)
+        if res.returncode == 0 and os.path.exists(raw_tmp):
+            return raw_tmp
+    except Exception:
+        pass
+    return exp
 
 def send_message(msg):
     """Send JSON message to Chrome with 4-byte length prefix."""
@@ -953,7 +996,7 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
             f"{cleanup_sh}"
             f"if [ -n \"$VOL\" ]; then "
             f"  echo \"__VOL__:$VOL\"; "
-            f"  if grep -q -- 'version: 2.2.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then "
+            f"  if grep -q -- 'merge_volume.lua' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then "
             f"    echo '__INSPECT__'; "
             f"    export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect \"$VOL\" 2>/dev/null || unzip -l \"$VOL\" 2>/dev/null; "
             f"  else "
@@ -1197,6 +1240,7 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
         save_to_kindle = auto_transfer
     exp_target = os.path.expanduser(local_target_cbz)
     exp_delta = os.path.expanduser(delta_zip_path)
+    log_debug(f"append_to_volume: target={exp_target}, delta={exp_delta}, save_pc={save_to_pc}, save_kindle={save_to_kindle}")
 
     if not os.path.exists(exp_delta):
         return {'status': 'error', 'message': f'Delta zip not found: {exp_delta}'}
@@ -1317,10 +1361,16 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
             remote_target_path = found_remote_path
             ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
 
-            # Transfer small delta to Kindle /mnt/us/koreader/cache/delta_<timestamp>.zip
+            # Stage delta safely to /tmp to bypass macOS TCC Sandbox on ~/Downloads
+            staged_delta = stage_file_to_tmp(exp_delta) or exp_delta
             remote_delta = f'/mnt/us/koreader/cache/delta_{int(time.time())}.zip'
-            delta_transfer_cmd = [scp_bin] + auth_flags + [exp_delta, f'{user}@{host}:{remote_delta}']
+            delta_transfer_cmd = [scp_bin] + auth_flags + [staged_delta, f'{user}@{host}:{remote_delta}']
             transfer_res = execute_with_auth(delta_transfer_cmd, password=password, key_path=key_path, timeout=60)
+            if staged_delta and staged_delta != exp_delta and os.path.exists(staged_delta):
+                try:
+                    os.remove(staged_delta)
+                except Exception:
+                    pass
             if transfer_res.returncode != 0:
                 kindle_result = {'status': 'error', 'message': f'Failed to send delta to Kindle: {transfer_res.stderr}'}
             else:
@@ -1589,6 +1639,7 @@ def main():
                 break
 
             action = req.get('action')
+            log_debug(f"Action: {action}")
             host = req.get('host', 'kindle.local')
             port = req.get('port', 2222)
             user = req.get('user', 'root')
@@ -1710,6 +1761,7 @@ def main():
             else:
                 send_message({'status': 'error', 'message': f'Unknown action: {action}'})
         except Exception as e:
+            log_debug(f"Host error in {action if 'action' in locals() else 'unknown'}: {str(e)}")
             send_message({'status': 'error', 'message': f'Host error: {str(e)}'})
 
 if __name__ == '__main__':
