@@ -450,6 +450,7 @@ body {
   border-bottom: 1px solid rgba(51, 65, 85, 0.4);
   gap: 10px;
   cursor: pointer;
+  user-select: none;
   transition: background-color 0.15s;
 }
 

@@ -18,6 +18,7 @@ import zipfile
 import re
 import xml.etree.ElementTree as ET
 import time
+import base64
 
 LOG_FILE = '/tmp/weeb_host.log'
 
@@ -1693,6 +1694,17 @@ def main():
                 except Exception:
                     pass
                 send_message({'status': 'success', 'deleted': deleted})
+            elif action == 'write_file_chunk':
+                file_path = req.get('file_path')
+                chunk_b64 = req.get('chunk_b64', '')
+                append = req.get('append', False)
+                exp = os.path.expanduser(file_path)
+                os.makedirs(os.path.dirname(exp), exist_ok=True)
+                mode = 'ab' if append else 'wb'
+                data = base64.b64decode(chunk_b64)
+                with open(exp, mode) as f:
+                    f.write(data)
+                send_message({'status': 'success', 'path': exp})
             elif action == 'inspect_volume':
                 volume_path = req.get('volume_path', '')
                 result = inspect_volume(volume_path)

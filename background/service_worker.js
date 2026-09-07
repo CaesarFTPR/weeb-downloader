@@ -5,6 +5,13 @@ const NATIVE_HOST_NAME = 'com.weebdownloader.kindle';
 
 console.log('[WeebDownloader] Service worker initialized.');
 
+// Clean up any stale temporary delta downloads from Chrome history
+if (typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.erase) {
+  try {
+    chrome.downloads.erase({ query: ['delta_'] });
+  } catch (e) {}
+}
+
 // Active download pipeline state
 let downloadState = {
   isDownloading: false,
@@ -1005,16 +1012,22 @@ ${navPointsXml}
   updateAndBroadcastProgress('Packaging delta payload...', 92);
   const deltaBase64 = await deltaZip.generateAsync({ type: 'base64', compression: 'STORE' });
 
-  // 4. Save delta file to staging
+  // 4. Save delta file directly via Native Host (avoids Chrome download bubble entirely)
   const stagingFilename = `delta_${Date.now()}.${format}`;
-  const stagingRel = downloadPaths.chromeSubfolder
-    ? `${downloadPaths.chromeSubfolder}/${stagingFilename}`
-    : stagingFilename;
+  let localDeltaPath = `/tmp/${stagingFilename}`;
 
   updateAndBroadcastProgress('Saving delta payload...', 94);
-  const mimeType = (format === 'cbz') ? 'application/octet-stream' : 'application/zip';
-  const saveDeltaRes = await saveBase64ToFile(deltaBase64, mimeType, stagingRel);
-  const localDeltaPath = saveDeltaRes?.savedPath || `${downloadPaths.desiredDir}/${stagingFilename}`;
+  try {
+    await saveBase64ViaNativeHost(deltaBase64, localDeltaPath);
+  } catch (e) {
+    console.warn('[WeebDownloader] Native direct write failed, falling back to chrome.downloads:', e);
+    const stagingRel = downloadPaths.chromeSubfolder
+      ? `${downloadPaths.chromeSubfolder}/${stagingFilename}`
+      : stagingFilename;
+    const mimeType = (format === 'cbz') ? 'application/octet-stream' : 'application/zip';
+    const saveDeltaRes = await saveBase64ToFile(deltaBase64, mimeType, stagingRel);
+    localDeltaPath = saveDeltaRes?.savedPath || `${downloadPaths.desiredDir}/${stagingFilename}`;
+  }
 
   // 5. In-place merge on PC and Kindle via Native Host
   updateAndBroadcastProgress('Merging into Manga Tome & syncing to Kindle...', 96);
@@ -1071,9 +1084,14 @@ ${navPointsXml}
     console.error('[WeebDownloader] Native merge error:', err);
     updateAndBroadcastProgress(`Merge error: ${err.message}`, 100, { error: err.message });
   } finally {
-    if (!saveToPc && localDeltaPath) {
+    if (localDeltaPath) {
       try {
         await sendNativeMessage({ action: 'delete_local_file', path: localDeltaPath });
+      } catch (e) {}
+    }
+    if (chrome.downloads && chrome.downloads.erase) {
+      try {
+        chrome.downloads.erase({ query: ['delta_'] });
       } catch (e) {}
     }
   }
@@ -1500,6 +1518,35 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
 }
 
 /**
+ * Save base64 data directly to disk via Native Messaging host chunks.
+ * Avoids triggering Chrome's download notification / drawer shelf overlay completely.
+ */
+async function saveBase64ViaNativeHost(base64Data, targetPath) {
+  const CHUNK_SIZE = 512 * 1024; // 512 KB base64 characters per chunk
+  const totalLength = base64Data.length;
+  let offset = 0;
+  let chunkIndex = 0;
+
+  while (offset < totalLength) {
+    const chunk = base64Data.slice(offset, offset + CHUNK_SIZE);
+    const append = chunkIndex > 0;
+    const res = await sendNativeMessage({
+      action: 'write_file_chunk',
+      file_path: targetPath,
+      chunk_b64: chunk,
+      append: append
+    });
+    if (!res || res.status !== 'success') {
+      throw new Error(res?.message || `Failed to write chunk ${chunkIndex} to ${targetPath}`);
+    }
+    offset += CHUNK_SIZE;
+    chunkIndex++;
+  }
+
+  return targetPath;
+}
+
+/**
  * Save base64 data to disk via chrome.downloads
  */
 function saveBase64ToFile(base64Data, mimeType, filename) {
@@ -1530,6 +1577,11 @@ function saveUrlToFile(url, filename) {
         chrome.downloads.onChanged.removeListener(checkStatus);
         chrome.downloads.search({ id }, items => {
           const savedPath = (items && items[0] && items[0].filename) ? items[0].filename : null;
+          if (filename && (filename.includes('delta_') || filename.includes('_weeb_staging'))) {
+            try {
+              chrome.downloads.erase({ id });
+            } catch (e) {}
+          }
           resolve({ downloadId: id, savedPath });
         });
       };

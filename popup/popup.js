@@ -29,6 +29,7 @@ const sessionStore = chrome.storage.session || chrome.storage.local;
 let currentManga = null;
 let allChapters = [];
 let selectedChapterIds = new Set();
+let lastClickedChapterId = null;
 let downloadedChapterIds = new Set();
 let chapterSourceMap = new Map(); // chapterId -> { pc: boolean, kindle: boolean }
 let isDownloading = false;
@@ -137,6 +138,13 @@ const elements = {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
+  // Clear any stale temporary delta downloads from Chrome download history to dismiss download bubble
+  if (chrome.downloads && chrome.downloads.erase) {
+    try {
+      chrome.downloads.erase({ query: ['delta_'] });
+    } catch (e) {}
+  }
+
   await loadSettings();
   setupEventListeners();
 
@@ -347,10 +355,17 @@ function syncDownloadState(state) {
     elements.btnDownload.disabled = true;
   } else if (state.isCompleted) {
     isDownloading = false;
+    selectedChapterIds.clear();
+    lastClickedChapterId = null;
+    updateSelectionBadge();
+
     elements.progressBar.style.width = '100%';
     elements.progressPercentText.textContent = '100%';
     elements.progressStatusText.textContent = state.statusText || 'Completed!';
-    elements.btnDownload.disabled = selectedChapterIds.size === 0;
+    elements.btnDownload.disabled = true;
+    if (elements.btnDeleteSelected) {
+      elements.btnDeleteSelected.disabled = true;
+    }
     setTimeout(() => {
       if (!isDownloading) {
         elements.progressContainer.classList.add('hidden');
@@ -557,7 +572,9 @@ async function loadSettings() {
   elements.settingSshPassword.value = currentSettings.sshPassword || '';
   elements.settingSshKeyPath.value = currentSettings.sshKeyPath || '';
   elements.settingRemotePath.value = currentSettings.remotePath;
-  elements.settingLocalDownloads.value = currentSettings.localDownloads;
+  if (elements.settingLocalDownloads) {
+    elements.settingLocalDownloads.value = currentSettings.localDownloads;
+  }
   if (elements.settingSkipExisting) {
     elements.settingSkipExisting.checked = currentSettings.skipExisting !== false;
   }
@@ -623,7 +640,7 @@ async function saveSettings() {
     sshPassword: elements.settingSshPassword.value,
     sshKeyPath: elements.settingSshKeyPath.value.trim(),
     remotePath: elements.settingRemotePath.value.trim() || '/mnt/us/koreader/',
-    localDownloads: elements.settingLocalDownloads.value.trim() || '~/Downloads',
+    localDownloads: elements.settingLocalDownloads ? (elements.settingLocalDownloads.value.trim() || '~/Downloads') : (currentSettings.localDownloads || '~/Downloads'),
     saveToPc: elements.targetSavePc ? elements.targetSavePc.checked : (currentSettings.saveToPc !== false),
     saveToKindle: elements.targetSaveKindle ? elements.targetSaveKindle.checked : (currentSettings.saveToKindle !== false)
   };
@@ -982,6 +999,7 @@ async function markMultipleChaptersAsDownloaded(seriesId, chapterIds, sources = 
 
 function selectNewChapters() {
   selectedChapterIds.clear();
+  lastClickedChapterId = null;
   allChapters.forEach(c => {
     if (!downloadedChapterIds.has(c.id)) {
       selectedChapterIds.add(c.id);
@@ -1008,6 +1026,7 @@ function selectNextChapters(count) {
 
   const startIdx = lastDownloadedIdx >= 0 ? lastDownloadedIdx + 1 : 0;
   selectedChapterIds.clear();
+  lastClickedChapterId = null;
   let addedCount = 0;
   let firstSelectedId = null;
 
@@ -1142,16 +1161,40 @@ function renderChapterList() {
     item.appendChild(checkbox);
     item.appendChild(details);
 
-    // Toggle on row click or checkbox click
+    // Toggle on row click or checkbox click with Shift+Click range support
     item.addEventListener('click', (e) => {
       if (e.target !== checkbox) {
         checkbox.checked = !checkbox.checked;
       }
-      toggleChapterSelection(chapter.id, checkbox.checked);
-    });
+      const targetState = checkbox.checked;
 
-    checkbox.addEventListener('change', () => {
-      toggleChapterSelection(chapter.id, checkbox.checked);
+      if (e.shiftKey && lastClickedChapterId && lastClickedChapterId !== chapter.id) {
+        if (window.getSelection) {
+          window.getSelection().removeAllRanges();
+        }
+        const visibleItems = Array.from(elements.chapterList.querySelectorAll('.chapter-item'));
+        const prevIdx = visibleItems.findIndex(el => el.dataset.id === lastClickedChapterId);
+        const curIdx = visibleItems.findIndex(el => el.dataset.id === chapter.id);
+
+        if (prevIdx !== -1 && curIdx !== -1) {
+          const start = Math.min(prevIdx, curIdx);
+          const end = Math.max(prevIdx, curIdx);
+          for (let i = start; i <= end; i++) {
+            const chId = visibleItems[i].dataset.id;
+            if (targetState) {
+              selectedChapterIds.add(chId);
+            } else {
+              selectedChapterIds.delete(chId);
+            }
+          }
+          lastClickedChapterId = chapter.id;
+          renderChapterList();
+          return;
+        }
+      }
+
+      lastClickedChapterId = chapter.id;
+      toggleChapterSelection(chapter.id, targetState);
     });
 
     elements.chapterList.appendChild(item);
@@ -1213,6 +1256,7 @@ function selectAllChapters() {
 
 function selectNoneChapters() {
   selectedChapterIds.clear();
+  lastClickedChapterId = null;
   renderChapterList();
 }
 
