@@ -43,9 +43,20 @@
     <main id="tab-chapters" class="tab-content active">
       <!-- Manga Info Header -->
       <section class="manga-card" id="manga-card">
-        <img id="manga-cover" class="manga-cover" src="../icons/icon128.png" alt="Cover">
+        <div class="manga-cover-wrapper" id="manga-cover-trigger" title="Нажмите, чтобы выбрать серию">
+          <img id="manga-cover" class="manga-cover" src="../icons/icon128.png" alt="Cover">
+          <span class="manga-cover-badge" title="Библиотека серий">📚</span>
+        </div>
         <div class="manga-meta">
-          <h2 id="manga-title" class="manga-title" title="Manga Title">Loading manga...</h2>
+          <div class="manga-title-row">
+            <div class="manga-title-wrapper" id="manga-title-trigger" title="Нажмите, чтобы переключить серию">
+              <h2 id="manga-title" class="manga-title" title="Manga Title">Loading manga...</h2>
+              <span class="manga-switch-arrow" id="manga-switch-arrow">▼</span>
+            </div>
+            <button id="btn-save-manga" class="btn btn-secondary btn-xs btn-save-manga" type="button" title="Добавить в список сохранённых серий">
+              <span id="icon-save-manga">🔖</span> <span id="text-save-manga">В список</span>
+            </button>
+          </div>
           <div class="manga-tags">
             <span id="chapter-count-badge" class="badge">0 chapters</span>
             <span id="selection-count-badge" class="badge badge-accent">0 selected</span>
@@ -53,6 +64,17 @@
           </div>
         </div>
       </section>
+
+      <!-- Saved Manga Dropdown Panel -->
+      <div id="saved-manga-panel" class="saved-manga-panel hidden">
+        <div class="saved-manga-header">
+          <span class="saved-manga-heading">📚 Сохранённые серии <span id="saved-manga-count" class="badge">0</span></span>
+          <button id="btn-close-saved-panel" class="btn-icon btn-close-saved" type="button" title="Закрыть">✕</button>
+        </div>
+        <div id="saved-manga-list" class="saved-manga-list">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
 
       <!-- Selection & Filter Controls -->
       <section class="controls-toolbar">
