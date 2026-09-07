@@ -198,6 +198,9 @@ function setupEventListeners() {
   elements.tabBtnSettings.addEventListener('click', () => switchTab('settings'));
 
   // Selection
+  if (elements.chapterList) {
+    elements.chapterList.addEventListener('click', handleChapterListClick);
+  }
   elements.btnApplyRange.addEventListener('click', applyRangeSelection);
   if (elements.btnScanArchives) {
     elements.btnScanArchives.addEventListener('click', () => scanArchivesAndMarkChapters(true));
@@ -1067,7 +1070,54 @@ function selectNextChapters(count) {
 }
 
 /**
- * Render the chapter items into DOM
+ * High-performance delegated click handler for chapter items and checkboxes
+ */
+function handleChapterListClick(e) {
+  const item = e.target.closest('.chapter-item');
+  if (!item) return;
+
+  const chapterId = item.dataset.id;
+  if (!chapterId) return;
+
+  const checkbox = item.querySelector('.chapter-checkbox');
+  if (!checkbox) return;
+
+  if (e.target !== checkbox) {
+    checkbox.checked = !checkbox.checked;
+  }
+  const targetState = checkbox.checked;
+
+  if (e.shiftKey && lastClickedChapterId && lastClickedChapterId !== chapterId) {
+    if (window.getSelection) {
+      window.getSelection().removeAllRanges();
+    }
+    const visibleItems = Array.from(elements.chapterList.querySelectorAll('.chapter-item'));
+    const prevIdx = visibleItems.findIndex(el => el.dataset.id === lastClickedChapterId);
+    const curIdx = visibleItems.findIndex(el => el.dataset.id === chapterId);
+
+    if (prevIdx !== -1 && curIdx !== -1) {
+      const start = Math.min(prevIdx, curIdx);
+      const end = Math.max(prevIdx, curIdx);
+      for (let i = start; i <= end; i++) {
+        const chId = visibleItems[i].dataset.id;
+        if (targetState) {
+          selectedChapterIds.add(chId);
+        } else {
+          selectedChapterIds.delete(chId);
+        }
+      }
+      lastClickedChapterId = chapterId;
+      renderChapterList();
+      return;
+    }
+  }
+
+  lastClickedChapterId = chapterId;
+  toggleChapterSelection(chapterId, targetState);
+}
+
+/**
+ * Render the chapter items into DOM using DocumentFragment for atomic single-pass reflow
  */
 function renderChapterList() {
   elements.chapterListLoading.classList.add('hidden');
@@ -1077,8 +1127,9 @@ function renderChapterList() {
 
   const filterText = elements.filterInput.value.toLowerCase().trim();
   let visibleCount = 0;
+  const fragment = document.createDocumentFragment();
 
-  allChapters.forEach((chapter, index) => {
+  allChapters.forEach((chapter) => {
     const isDownloaded = downloadedChapterIds.has(chapter.id);
     if (hideDownloaded && isDownloaded) return;
 
@@ -1161,43 +1212,7 @@ function renderChapterList() {
     item.appendChild(checkbox);
     item.appendChild(details);
 
-    // Toggle on row click or checkbox click with Shift+Click range support
-    item.addEventListener('click', (e) => {
-      if (e.target !== checkbox) {
-        checkbox.checked = !checkbox.checked;
-      }
-      const targetState = checkbox.checked;
-
-      if (e.shiftKey && lastClickedChapterId && lastClickedChapterId !== chapter.id) {
-        if (window.getSelection) {
-          window.getSelection().removeAllRanges();
-        }
-        const visibleItems = Array.from(elements.chapterList.querySelectorAll('.chapter-item'));
-        const prevIdx = visibleItems.findIndex(el => el.dataset.id === lastClickedChapterId);
-        const curIdx = visibleItems.findIndex(el => el.dataset.id === chapter.id);
-
-        if (prevIdx !== -1 && curIdx !== -1) {
-          const start = Math.min(prevIdx, curIdx);
-          const end = Math.max(prevIdx, curIdx);
-          for (let i = start; i <= end; i++) {
-            const chId = visibleItems[i].dataset.id;
-            if (targetState) {
-              selectedChapterIds.add(chId);
-            } else {
-              selectedChapterIds.delete(chId);
-            }
-          }
-          lastClickedChapterId = chapter.id;
-          renderChapterList();
-          return;
-        }
-      }
-
-      lastClickedChapterId = chapter.id;
-      toggleChapterSelection(chapter.id, targetState);
-    });
-
-    elements.chapterList.appendChild(item);
+    fragment.appendChild(item);
   });
 
   if (visibleCount === 0) {
@@ -1212,9 +1227,10 @@ function renderChapterList() {
     } else {
       emptyNotice.innerHTML = `<p>No chapters match the current filter.</p>`;
     }
-    elements.chapterList.appendChild(emptyNotice);
+    fragment.appendChild(emptyNotice);
   }
 
+  elements.chapterList.appendChild(fragment);
   updateSelectionBadge();
 }
 
