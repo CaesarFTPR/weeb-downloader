@@ -136,28 +136,32 @@ body {
   font-weight: 600;
 }
 
-/* Status Banner (Floating Overlay) */
+/* Status Banner (Bottom Floating Toast) */
 .status-banner {
-  position: absolute;
-  top: 52px;
+  position: fixed;
+  bottom: 12px;
   left: 12px;
   right: 12px;
   z-index: 1000;
-  padding: 10px 14px;
-  font-size: 12px;
+  padding: 8px 14px;
+  font-size: 11.5px;
   font-weight: 500;
   text-align: center;
-  border-radius: var(--radius-md);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.75), 0 2px 6px rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(12px);
   cursor: pointer;
-  animation: bannerSlideDown 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: bannerSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
-@keyframes bannerSlideDown {
+@keyframes bannerSlideUp {
   from {
     opacity: 0;
-    transform: translateY(-8px) scale(0.98);
+    transform: translateY(12px) scale(0.98);
   }
   to {
     opacity: 1;
@@ -193,8 +197,19 @@ body {
   overflow-x: hidden;
 }
 
+#tab-chapters {
+  overflow: visible;
+}
+
 .tab-content.active {
   display: flex;
+}
+
+/* Manga Header Wrapper (Sticky / Anchor for Dropdown Overlay) */
+.manga-header-wrapper {
+  position: relative;
+  z-index: 60;
+  flex-shrink: 0;
 }
 
 /* Manga Info Card */
@@ -299,70 +314,71 @@ body {
   color: var(--accent-color);
 }
 
-.btn-save-manga {
+/* Add / Remove Toggle Button (Header & List Items) */
+.btn-toggle-save {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  padding: 3px 9px;
-  font-size: 11px;
-  font-weight: 500;
-  border-radius: 12px;
-  transition: all 0.2s ease;
+  font-size: 13px;
+  line-height: 1;
   cursor: pointer;
-  border: 1px solid transparent;
+  flex-shrink: 0;
+  transition: all 0.18s ease;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.05);
 }
 
-.btn-save-manga.is-saved {
-  background: rgba(16, 185, 129, 0.15);
-  border-color: rgba(16, 185, 129, 0.4);
+.btn-toggle-save:hover {
+  transform: scale(1.08);
+}
+
+.btn-toggle-save:active {
+  transform: scale(0.94);
+}
+
+.btn-toggle-save.is-not-saved {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.35);
   color: #6ee7b7;
 }
 
-.btn-save-manga.is-saved:hover {
-  background: rgba(239, 68, 68, 0.18);
-  border-color: rgba(239, 68, 68, 0.5);
+.btn-toggle-save.is-not-saved:hover {
+  background: rgba(16, 185, 129, 0.25);
+  border-color: rgba(16, 185, 129, 0.6);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+}
+
+.btn-toggle-save.is-saved {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
   color: #fca5a5;
 }
 
-.btn-save-manga .save-status-normal {
-  display: inline;
+.btn-toggle-save.is-saved:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.6);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
 }
 
-.btn-save-manga .save-status-hover {
-  display: none;
-}
-
-.btn-save-manga.is-saved:hover .save-status-normal {
-  display: none;
-}
-
-.btn-save-manga.is-saved:hover .save-status-hover {
-  display: inline;
-}
-
-.btn-save-manga.is-not-saved {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.15);
-  color: var(--text-secondary);
-}
-
-.btn-save-manga.is-not-saved:hover {
-  background: rgba(16, 185, 129, 0.2);
-  border-color: rgba(16, 185, 129, 0.5);
-  color: #6ee7b7;
-}
-
-/* Saved Manga Dropdown Panel */
+/* Saved Manga Dropdown Panel (Floating Overlay) */
 .saved-manga-panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
   background-color: #1a2234;
   border-bottom: 2px solid var(--accent-color);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  animation: slideDownFade 0.2s ease-out;
-  position: relative;
-  z-index: 50;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.8), 0 4px 12px rgba(0, 0, 0, 0.5);
+  animation: slideDownFade 0.18s ease-out;
+  z-index: 100;
+  max-height: 290px;
+  display: flex;
+  flex-direction: column;
 }
 
 @keyframes slideDownFade {
@@ -538,10 +554,6 @@ body {
   border: 1px solid rgba(239, 68, 68, 0.35);
   font-weight: 500;
   white-space: nowrap;
-}
-
-.btn-save-manga-toggle {
-  min-width: 82px;
 }
 
 .saved-manga-empty {

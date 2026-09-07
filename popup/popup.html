@@ -36,40 +36,40 @@
       </div>
     </header>
 
-    <!-- Global Notification Banner -->
-    <div id="status-banner" class="status-banner hidden"></div>
-
     <!-- TAB 1: CHAPTERS -->
     <main id="tab-chapters" class="tab-content active">
-      <!-- Manga Info Header -->
-      <section class="manga-card" id="manga-card">
-        <div class="manga-cover-wrapper" id="manga-cover-trigger" title="Нажмите, чтобы выбрать серию">
-          <img id="manga-cover" class="manga-cover" src="../icons/icon128.png" alt="Cover">
-          <span class="manga-cover-badge" title="Библиотека серий">📚</span>
-        </div>
-        <div class="manga-meta">
-          <div class="manga-title-row">
-            <div class="manga-title-wrapper" id="manga-title-trigger" title="Нажмите, чтобы переключить серию">
-              <h2 id="manga-title" class="manga-title" title="Manga Title">Loading manga...</h2>
-              <span class="manga-switch-arrow" id="manga-switch-arrow">▼</span>
+      <!-- Manga Info Header & Overlay Switcher -->
+      <div class="manga-header-wrapper">
+        <section class="manga-card" id="manga-card">
+          <div class="manga-cover-wrapper" id="manga-cover-trigger" title="Нажмите, чтобы выбрать серию">
+            <img id="manga-cover" class="manga-cover" src="../icons/icon128.png" alt="Cover">
+            <span class="manga-cover-badge" title="Библиотека серий">📚</span>
+          </div>
+          <div class="manga-meta">
+            <div class="manga-title-row">
+              <div class="manga-title-wrapper" id="manga-title-trigger" title="Нажмите, чтобы переключить серию">
+                <h2 id="manga-title" class="manga-title" title="Manga Title">Loading manga...</h2>
+                <span class="manga-switch-arrow" id="manga-switch-arrow">▼</span>
+              </div>
+              <button id="btn-save-manga-header" class="btn-toggle-save is-not-saved" type="button" title="Добавить в список сохранённых">➕</button>
+            </div>
+            <div class="manga-tags">
+              <span id="chapter-count-badge" class="badge">0 chapters</span>
+              <span id="selection-count-badge" class="badge badge-accent">0 selected</span>
+              <span id="reading-progress-badge" class="badge badge-reading hidden" title="Reading position in KOReader on Kindle">📖 Kindle: 0%</span>
             </div>
           </div>
-          <div class="manga-tags">
-            <span id="chapter-count-badge" class="badge">0 chapters</span>
-            <span id="selection-count-badge" class="badge badge-accent">0 selected</span>
-            <span id="reading-progress-badge" class="badge badge-reading hidden" title="Reading position in KOReader on Kindle">📖 Kindle: 0%</span>
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Saved Manga Dropdown Panel -->
-      <div id="saved-manga-panel" class="saved-manga-panel hidden">
-        <div class="saved-manga-header">
-          <span class="saved-manga-heading">📚 Сохранённые серии <span id="saved-manga-count" class="badge">0</span></span>
-          <button id="btn-close-saved-panel" class="btn-icon btn-close-saved" type="button" title="Закрыть">✕</button>
-        </div>
-        <div id="saved-manga-list" class="saved-manga-list">
-          <!-- Rendered dynamically -->
+        <!-- Saved Manga Dropdown Panel (Overlay) -->
+        <div id="saved-manga-panel" class="saved-manga-panel hidden">
+          <div class="saved-manga-header">
+            <span class="saved-manga-heading">📚 Сохранённые серии <span id="saved-manga-count" class="badge">0</span></span>
+            <button id="btn-close-saved-panel" class="btn-icon btn-close-saved" type="button" title="Закрыть">✕</button>
+          </div>
+          <div id="saved-manga-list" class="saved-manga-list">
+            <!-- Rendered dynamically -->
+          </div>
         </div>
       </div>
 
@@ -375,6 +375,9 @@
       </div>
     </div>
   </div>
+
+  <!-- Global Notification Banner (Bottom Floating Toast) -->
+  <div id="status-banner" class="status-banner hidden"></div>
 
   <!-- Main popup controller -->
   <script src="popup.js"></script>

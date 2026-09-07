@@ -61,6 +61,7 @@ const elements = {
   mangaTitle: document.getElementById('manga-title'),
   mangaTitleTrigger: document.getElementById('manga-title-trigger'),
   mangaSwitchArrow: document.getElementById('manga-switch-arrow'),
+  btnSaveMangaHeader: document.getElementById('btn-save-manga-header'),
   savedMangaPanel: document.getElementById('saved-manga-panel'),
   savedMangaList: document.getElementById('saved-manga-list'),
   savedMangaCount: document.getElementById('saved-manga-count'),
@@ -215,12 +216,21 @@ function setupEventListeners() {
   if (elements.mangaCoverTrigger) {
     elements.mangaCoverTrigger.addEventListener('click', () => toggleSavedMangaPanel());
   }
+  if (elements.btnSaveMangaHeader) {
+    elements.btnSaveMangaHeader.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (currentManga && currentManga.seriesId) {
+        await toggleMangaSavedState(currentManga.seriesId);
+      }
+    });
+  }
   if (elements.btnCloseSavedPanel) {
     elements.btnCloseSavedPanel.addEventListener('click', () => toggleSavedMangaPanel(false));
   }
   if (elements.savedMangaList) {
     elements.savedMangaList.addEventListener('click', async (e) => {
-      const toggleBtn = e.target.closest('.btn-save-manga-toggle');
+      const toggleBtn = e.target.closest('.btn-toggle-save, .btn-save-manga-toggle');
       if (toggleBtn) {
         e.stopPropagation();
         e.preventDefault();
@@ -247,8 +257,9 @@ function setupEventListeners() {
     const clickedPanel = elements.savedMangaPanel.contains(e.target);
     const clickedTitle = elements.mangaTitleTrigger && elements.mangaTitleTrigger.contains(e.target);
     const clickedCover = elements.mangaCoverTrigger && elements.mangaCoverTrigger.contains(e.target);
+    const clickedHeaderBtn = elements.btnSaveMangaHeader && elements.btnSaveMangaHeader.contains(e.target);
 
-    if (!clickedPanel && !clickedTitle && !clickedCover) {
+    if (!clickedPanel && !clickedTitle && !clickedCover && !clickedHeaderBtn) {
       toggleSavedMangaPanel(false);
     }
   });
@@ -566,9 +577,28 @@ async function loadSavedMangaList() {
 }
 
 /**
- * Update the state of the library dropdown if open
+ * Update the state of the save toggle button in the header and library dropdown if open
  */
 function updateSaveButtonState() {
+  if (elements.btnSaveMangaHeader) {
+    if (currentManga && currentManga.seriesId) {
+      const isSaved = savedMangaList.some(m => m.seriesId === currentManga.seriesId) 
+                   && !sessionRemovedIds.has(currentManga.seriesId);
+      if (isSaved) {
+        elements.btnSaveMangaHeader.className = 'btn-toggle-save is-saved';
+        elements.btnSaveMangaHeader.textContent = '🗑️';
+        elements.btnSaveMangaHeader.title = 'Удалить из списка';
+      } else {
+        elements.btnSaveMangaHeader.className = 'btn-toggle-save is-not-saved';
+        elements.btnSaveMangaHeader.textContent = '➕';
+        elements.btnSaveMangaHeader.title = 'Добавить в список';
+      }
+      elements.btnSaveMangaHeader.classList.remove('hidden');
+    } else {
+      elements.btnSaveMangaHeader.classList.add('hidden');
+    }
+  }
+
   if (elements.savedMangaPanel && !elements.savedMangaPanel.classList.contains('hidden')) {
     renderSavedMangaList();
   }
@@ -595,7 +625,7 @@ async function toggleMangaSavedState(seriesId) {
 
     await chrome.storage.local.set({ saved_manga_list: savedMangaList });
     showBanner(`«${itemToRemove?.title || 'Манга'}» удалена из списка`, 'info', 2500);
-    renderSavedMangaList();
+    updateSaveButtonState();
   } else {
     // Add or restore to saved list
     sessionRemovedIds.delete(seriesId);
@@ -645,7 +675,7 @@ async function toggleMangaSavedState(seriesId) {
       last_active_series_id: seriesId
     });
     showBanner(`«${newEntry.title}» добавлена в список!`, 'success', 2500);
-    renderSavedMangaList();
+    updateSaveButtonState();
   }
 }
 
@@ -790,14 +820,11 @@ function renderSavedMangaList() {
             ${isRemoved ? '<span class="saved-badge-removed">Удалена</span>' : ''}
           </div>
         </div>
-        <button class="btn-save-manga btn-save-manga-toggle ${isSaved ? 'is-saved' : 'is-not-saved'}" 
+        <button class="btn-toggle-save ${isSaved ? 'is-saved' : 'is-not-saved'}" 
                 type="button" 
                 data-series-id="${item.seriesId}" 
-                title="${isSaved ? 'Удалить из списка (останется до закрытия)' : 'Добавить в список сохранённых'}">
-          ${isSaved 
-            ? '<span class="save-status-normal">✓ В списке</span><span class="save-status-hover">✕ Удалить</span>' 
-            : '<span>+ В список</span>'
-          }
+                title="${isSaved ? 'Удалить из списка' : 'Добавить в список'}">
+          ${isSaved ? '🗑️' : '➕'}
         </button>
       </div>
     `;
@@ -838,6 +865,7 @@ async function switchToSavedManga(seriesId, silent = false) {
   if (currentManga.coverUrl) {
     elements.mangaCover.src = currentManga.coverUrl;
   }
+  updateSaveButtonState();
 
   allChapters = Array.isArray(target.chapters) ? target.chapters : [];
   elements.chapterCountBadge.textContent = `${allChapters.length} chapters`;
