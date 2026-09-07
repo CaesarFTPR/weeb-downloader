@@ -89,14 +89,12 @@ const elements = {
   chapterListNotSeries: document.getElementById('chapter-list-not-series'),
   chapterList: document.getElementById('chapter-list'),
 
-  // Progress & Actions
-  progressContainer: document.getElementById('progress-container'),
-  progressStatusText: document.getElementById('progress-status-text'),
-  progressPercentText: document.getElementById('progress-percent-text'),
-  progressBar: document.getElementById('progress-bar'),
+  // Actions & Progress
   btnCancelDownload: document.getElementById('btn-cancel-download'),
   btnDownload: document.getElementById('btn-download'),
   btnDownloadLabel: document.getElementById('btn-download-label'),
+  btnDownloadIcon: document.getElementById('btn-download-icon'),
+  btnDownloadProgress: document.getElementById('btn-download-progress'),
   btnDeleteSelected: document.getElementById('btn-delete-selected'),
   btnDeleteLabel: document.getElementById('btn-delete-label'),
 
@@ -411,29 +409,68 @@ function syncDownloadState(state) {
   if (state.isDownloading) {
     wasDownloading = true;
     isDownloading = true;
-    elements.progressContainer.classList.remove('hidden');
-    elements.progressBar.style.width = `${state.percent}%`;
-    elements.progressPercentText.textContent = `${state.percent}%`;
-    elements.progressStatusText.textContent = state.statusText || 'Downloading in background...';
-    elements.btnDownload.disabled = true;
+
+    if (elements.btnCancelDownload) elements.btnCancelDownload.classList.remove('hidden');
+    if (elements.btnDeleteSelected) elements.btnDeleteSelected.classList.add('hidden');
+
+    if (elements.btnDownload) {
+      elements.btnDownload.classList.add('is-downloading');
+      elements.btnDownload.disabled = true;
+    }
+
+    const pct = Math.max(0, Math.min(100, state.percent || 0));
+    if (elements.btnDownloadProgress) {
+      elements.btnDownloadProgress.style.width = `${pct}%`;
+    }
+    if (elements.btnDownloadIcon) {
+      elements.btnDownloadIcon.textContent = '⏳';
+    }
+    const status = state.statusText || 'Downloading in background...';
+    const statusWithPct = pct > 0 ? `${status} (${pct}%)` : status;
+    if (elements.btnDownloadLabel) {
+      elements.btnDownloadLabel.textContent = statusWithPct;
+    }
+    if (elements.btnDownload) {
+      elements.btnDownload.title = statusWithPct;
+    }
   } else if (state.isCompleted) {
     isDownloading = false;
     selectedChapterIds.clear();
     lastClickedChapterId = null;
-    updateSelectionBadge();
 
-    elements.progressBar.style.width = '100%';
-    elements.progressPercentText.textContent = '100%';
-    elements.progressStatusText.textContent = state.statusText || 'Completed!';
-    elements.btnDownload.disabled = true;
-    if (elements.btnDeleteSelected) {
-      elements.btnDeleteSelected.disabled = true;
+    if (elements.btnCancelDownload) elements.btnCancelDownload.classList.add('hidden');
+    if (elements.btnDeleteSelected) elements.btnDeleteSelected.classList.remove('hidden');
+
+    if (elements.btnDownload) {
+      elements.btnDownload.classList.add('is-downloading');
+      elements.btnDownload.disabled = true;
     }
+    if (elements.btnDownloadProgress) {
+      elements.btnDownloadProgress.style.width = '100%';
+    }
+    if (elements.btnDownloadIcon) {
+      elements.btnDownloadIcon.textContent = '🎉';
+    }
+    const completeMsg = state.statusText || 'Completed!';
+    if (elements.btnDownloadLabel) {
+      elements.btnDownloadLabel.textContent = completeMsg;
+    }
+    if (elements.btnDownload) {
+      elements.btnDownload.title = completeMsg;
+    }
+
     setTimeout(() => {
       if (!isDownloading) {
-        elements.progressContainer.classList.add('hidden');
+        if (elements.btnDownload) {
+          elements.btnDownload.classList.remove('is-downloading');
+        }
+        if (elements.btnDownloadProgress) {
+          elements.btnDownloadProgress.style.width = '0%';
+        }
+        updateSelectionBadge();
       }
-    }, 5000);
+    }, 3000);
+
     if (currentManga && currentManga.seriesId) {
       loadSavedDownloadedChapters(currentManga.seriesId).then(() => {
         renderChapterList();
@@ -447,11 +484,31 @@ function syncDownloadState(state) {
   } else if (state.error) {
     wasDownloading = false;
     isDownloading = false;
-    elements.progressStatusText.textContent = `Error: ${state.error}`;
-    elements.btnDownload.disabled = selectedChapterIds.size === 0;
+
+    if (elements.btnCancelDownload) elements.btnCancelDownload.classList.add('hidden');
+    if (elements.btnDeleteSelected) elements.btnDeleteSelected.classList.remove('hidden');
+
+    if (elements.btnDownload) {
+      elements.btnDownload.classList.remove('is-downloading');
+    }
+    if (elements.btnDownloadProgress) {
+      elements.btnDownloadProgress.style.width = '0%';
+    }
+    showBanner(`Error: ${state.error}`, 'error', 6000);
+    updateSelectionBadge();
   } else {
     isDownloading = false;
-    elements.btnDownload.disabled = selectedChapterIds.size === 0;
+
+    if (elements.btnCancelDownload) elements.btnCancelDownload.classList.add('hidden');
+    if (elements.btnDeleteSelected) elements.btnDeleteSelected.classList.remove('hidden');
+
+    if (elements.btnDownload) {
+      elements.btnDownload.classList.remove('is-downloading');
+    }
+    if (elements.btnDownloadProgress) {
+      elements.btnDownloadProgress.style.width = '0%';
+    }
+    updateSelectionBadge();
   }
 }
 
@@ -818,7 +875,7 @@ function updateTargetDeviceUI() {
     }
   }
 
-  if (elements.btnDownloadLabel) {
+  if (elements.btnDownloadLabel && !isDownloading) {
     const count = selectedChapterIds.size;
     const countSuffix = count > 0 ? ` (${count})` : '';
     if (savePc && saveKindle) {
@@ -1758,7 +1815,17 @@ function updateSelectionBadge() {
   if (savePc && !saveKindle) targetLabel = 'to PC';
   else if (!savePc && saveKindle) targetLabel = 'to Kindle';
 
-  elements.btnDownload.innerHTML = `<span class="btn-icon">📥</span> <span id="btn-download-label">Download ${targetLabel} (${count})</span>`;
+  if (!isDownloading) {
+    if (elements.btnDownloadIcon) {
+      elements.btnDownloadIcon.textContent = '📥';
+    }
+    if (elements.btnDownloadLabel) {
+      elements.btnDownloadLabel.textContent = `Download ${targetLabel} (${count})`;
+    }
+    if (elements.btnDownload) {
+      elements.btnDownload.title = `Download ${count} selected chapter(s) ${targetLabel}`;
+    }
+  }
   elements.btnDownload.disabled = count === 0 || isDownloading;
 
   if (elements.btnDeleteLabel) {
@@ -1942,11 +2009,26 @@ async function startDownloadPipeline() {
 
   isDownloading = true;
   cancelRequested = false;
-  elements.btnDownload.disabled = true;
-  elements.progressContainer.classList.remove('hidden');
-  elements.progressBar.style.width = '0%';
-  elements.progressPercentText.textContent = '0%';
-  elements.progressStatusText.textContent = 'Starting background download...';
+
+  if (elements.btnCancelDownload) elements.btnCancelDownload.classList.remove('hidden');
+  if (elements.btnDeleteSelected) elements.btnDeleteSelected.classList.add('hidden');
+
+  if (elements.btnDownload) {
+    elements.btnDownload.classList.add('is-downloading');
+    elements.btnDownload.disabled = true;
+  }
+  if (elements.btnDownloadProgress) {
+    elements.btnDownloadProgress.style.width = '0%';
+  }
+  if (elements.btnDownloadIcon) {
+    elements.btnDownloadIcon.textContent = '⏳';
+  }
+  if (elements.btnDownloadLabel) {
+    elements.btnDownloadLabel.textContent = 'Starting background download...';
+  }
+  if (elements.btnDownload) {
+    elements.btnDownload.title = 'Starting background download...';
+  }
 
   try {
     const res = await chrome.runtime.sendMessage({
@@ -1972,14 +2054,30 @@ async function startDownloadPipeline() {
     console.error('Download start error:', err);
     showBanner(`Download failed: ${err.message}`, 'error', 6000);
     isDownloading = false;
-    elements.btnDownload.disabled = selectedChapterIds.size === 0;
+    if (elements.btnCancelDownload) elements.btnCancelDownload.classList.add('hidden');
+    if (elements.btnDeleteSelected) elements.btnDeleteSelected.classList.remove('hidden');
+    if (elements.btnDownload) {
+      elements.btnDownload.classList.remove('is-downloading');
+    }
+    if (elements.btnDownloadProgress) {
+      elements.btnDownloadProgress.style.width = '0%';
+    }
+    updateSelectionBadge();
   }
 }
 
 function updateProgress(statusText, percent) {
-  elements.progressStatusText.textContent = statusText;
-  elements.progressPercentText.textContent = `${percent}%`;
-  elements.progressBar.style.width = `${percent}%`;
+  const pct = Math.max(0, Math.min(100, percent || 0));
+  if (elements.btnDownloadProgress) {
+    elements.btnDownloadProgress.style.width = `${pct}%`;
+  }
+  const display = pct > 0 ? `${statusText} (${pct}%)` : statusText;
+  if (elements.btnDownloadLabel) {
+    elements.btnDownloadLabel.textContent = display;
+  }
+  if (elements.btnDownload) {
+    elements.btnDownload.title = display;
+  }
 }
 
 function getExtensionFromUrl(url, mime) {

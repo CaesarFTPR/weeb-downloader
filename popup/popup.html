@@ -126,18 +126,6 @@
 
       <!-- Download & Progress Section -->
       <section class="action-footer">
-        <!-- Progress Bar (hidden by default) -->
-        <div id="progress-container" class="progress-container hidden">
-          <div class="progress-header">
-            <span id="progress-status-text" class="progress-status-text">Preparing...</span>
-            <span id="progress-percent-text" class="progress-percent-text">0%</span>
-          </div>
-          <div class="progress-track">
-            <div id="progress-bar" class="progress-bar" style="width: 0%;"></div>
-          </div>
-          <button id="btn-cancel-download" class="btn btn-danger btn-sm mt-1">Cancel</button>
-        </div>
-
         <!-- Target Devices Selector Bar -->
         <div class="target-devices-bar">
           <span class="target-devices-label">Target:</span>
@@ -166,10 +154,17 @@
           </button>
         </div>
 
-        <!-- Main Actions Row (Download & Delete) -->
+        <!-- Main Actions Row (Download, Cancel & Delete) -->
         <div class="main-actions-row">
-          <button id="btn-download" class="btn btn-primary flex-1">
-            <span class="btn-icon">📥</span> <span id="btn-download-label">Download to PC & Kindle</span>
+          <button id="btn-download" class="btn btn-primary flex-1 btn-download-interactive" type="button">
+            <div id="btn-download-progress" class="btn-progress-fill"></div>
+            <div id="btn-download-content" class="btn-content">
+              <span class="btn-icon" id="btn-download-icon">📥</span>
+              <span id="btn-download-label" class="btn-download-text">Download to PC & Kindle</span>
+            </div>
+          </button>
+          <button id="btn-cancel-download" class="btn btn-danger-outline hidden" type="button" title="Cancel current download">
+            <span class="btn-icon">✕</span> <span>Cancel</span>
           </button>
           <button id="btn-delete-selected" class="btn btn-danger-outline" type="button" title="Delete selected chapters from PC or Kindle">
             <span class="btn-icon">🗑️</span> <span id="btn-delete-label">Delete</span>

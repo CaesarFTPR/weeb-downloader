@@ -811,46 +811,70 @@ body {
   gap: 6px;
 }
 
-.progress-container {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background-color: var(--bg-primary);
-  padding: 6px 8px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-color);
+/* Integrated Download Progress Button */
+.btn-download-interactive {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  box-sizing: border-box;
+  transition: background-color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
-.progress-header {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
+.btn-download-interactive .btn-progress-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 0%;
+  background: linear-gradient(90deg, #10b981 0%, #059669 100%);
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
 }
 
-.progress-status-text {
-  color: var(--text-secondary);
+.btn-download-interactive .btn-content {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  pointer-events: none;
+}
+
+.btn-download-interactive .btn-download-text {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 360px;
+  max-width: 100%;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
-.progress-percent-text {
-  color: var(--accent-color);
-  font-weight: 700;
+/* Gray button base while downloading, filled smoothly with green */
+#btn-download.is-downloading,
+#btn-download.is-downloading:disabled {
+  background-color: #334155 !important;
+  border: 1px solid #475569 !important;
+  color: #ffffff !important;
+  opacity: 1 !important;
+  cursor: default !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
-.progress-track {
-  height: 6px;
-  background-color: var(--bg-tertiary);
-  border-radius: 3px;
-  overflow: hidden;
+#btn-download.is-downloading .btn-content {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
 
-.progress-bar {
-  height: 100%;
-  background: linear-gradient(90deg, #6366f1, #a855f7);
-  transition: width 0.2s ease;
+#btn-download.is-downloading .btn-progress-fill {
+  box-shadow: 2px 0 8px rgba(16, 185, 129, 0.4);
 }
 
 /* Buttons */
