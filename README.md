@@ -73,7 +73,7 @@ Tested on physical **Kindle Paperwhite (ARMv7)** with a 190 MB volume (25 chapte
 ### Step 1: Install the Chrome Extension
 1. Clone or download this repository to your computer:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/weeb-downloader.git
+   git clone https://github.com/CaesarFTPR/weeb-downloader.git
    cd weeb-downloader
    ```
 2. Open your browser and navigate to `chrome://extensions/`.
