@@ -975,14 +975,7 @@ function updateTargetDeviceUI() {
 
   if (elements.btnDownloadLabel && !isDownloading) {
     const count = selectedChapterIds.size;
-    const countSuffix = count > 0 ? ` (${count})` : '';
-    if (savePc && saveKindle) {
-      elements.btnDownloadLabel.textContent = `Download to PC & Kindle${countSuffix}`;
-    } else if (savePc) {
-      elements.btnDownloadLabel.textContent = `Download to PC${countSuffix}`;
-    } else if (saveKindle) {
-      elements.btnDownloadLabel.textContent = `Download to Kindle${countSuffix}`;
-    }
+    elements.btnDownloadLabel.textContent = count > 0 ? `(${count})` : '';
   }
 
   currentSettings.saveToPc = savePc;
@@ -1746,14 +1739,6 @@ function renderChapterList() {
       }
       metaRight.appendChild(badge);
     }
-
-    if (chapter.date) {
-      const dateSpan = document.createElement('span');
-      dateSpan.className = 'chapter-date';
-      dateSpan.textContent = formatChapterDate(chapter.date);
-      metaRight.appendChild(dateSpan);
-    }
-
     details.appendChild(nameSpan);
     details.appendChild(metaRight);
 
@@ -1936,19 +1921,24 @@ function updateSelectionBadge() {
       elements.btnDownloadIcon.textContent = '📥';
     }
     if (elements.btnDownloadLabel) {
-      elements.btnDownloadLabel.textContent = `Download ${targetLabel} (${count})`;
+      elements.btnDownloadLabel.textContent = count > 0 ? `(${count})` : '';
     }
     if (elements.btnDownload) {
-      elements.btnDownload.title = `Download ${count} selected chapter(s) ${targetLabel}`;
+      elements.btnDownload.title = count > 0 
+        ? `Download ${count} selected chapter(s) ${targetLabel}` 
+        : `Select chapters to download ${targetLabel}`;
     }
   }
   elements.btnDownload.disabled = count === 0 || isDownloading;
 
   if (elements.btnDeleteLabel) {
-    elements.btnDeleteLabel.textContent = count > 0 ? `Delete (${count})` : 'Delete';
+    elements.btnDeleteLabel.textContent = '';
   }
   if (elements.btnDeleteSelected) {
     elements.btnDeleteSelected.disabled = count === 0 || isDownloading;
+    elements.btnDeleteSelected.title = count > 0 
+      ? `Delete ${count} selected chapter(s) from PC or Kindle` 
+      : 'Select chapters to delete';
   }
 
   saveSelectionToSession();

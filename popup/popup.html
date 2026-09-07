@@ -153,18 +153,18 @@
 
         <!-- Main Actions Row (Download, Cancel & Delete) -->
         <div class="main-actions-row">
-          <button id="btn-download" class="btn btn-primary flex-1 btn-download-interactive" type="button">
+          <button id="btn-download" class="btn btn-primary flex-1 btn-download-interactive" type="button" title="Download selected chapters">
             <div id="btn-download-progress" class="btn-progress-fill"></div>
             <div id="btn-download-content" class="btn-content">
               <span class="btn-icon" id="btn-download-icon">📥</span>
-              <span id="btn-download-label" class="btn-download-text">Download to PC & Kindle</span>
+              <span id="btn-download-label" class="btn-download-text"></span>
             </div>
           </button>
           <button id="btn-cancel-download" class="btn btn-danger-outline hidden" type="button" title="Cancel current download">
             <span class="btn-icon">✕</span> <span>Cancel</span>
           </button>
-          <button id="btn-delete-selected" class="btn btn-danger-outline" type="button" title="Delete selected chapters from PC or Kindle">
-            <span class="btn-icon">🗑️</span> <span id="btn-delete-label">Delete</span>
+          <button id="btn-delete-selected" class="btn btn-danger-outline btn-delete-compact" type="button" title="Delete selected chapters from PC or Kindle">
+            <span class="btn-icon">🗑️</span>
           </button>
         </div>
       </section>

@@ -136,19 +136,21 @@ body {
   font-weight: 600;
 }
 
-/* Status Banner (Bottom Floating Toast) */
+/* Status Banner (Floating Toast over Destination / Lower Logo & Title Zone) */
 .status-banner {
   position: fixed;
-  bottom: 12px;
+  bottom: 52px;
   left: 12px;
   right: 12px;
   z-index: 1000;
-  padding: 8px 14px;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 14px;
   font-size: 11.5px;
   font-weight: 500;
   text-align: center;
   border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.75), 0 2px 6px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.75), 0 1px 4px rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(12px);
   cursor: pointer;
   animation: bannerSlideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1);
@@ -156,6 +158,9 @@ body {
   align-items: center;
   justify-content: center;
   gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @keyframes bannerSlideUp {
@@ -1366,6 +1371,18 @@ body {
 
 .btn-danger-outline:active:not(:disabled) {
   transform: scale(0.98);
+}
+
+.btn-delete-compact {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
 }
 
 /* Modal Dialog */
