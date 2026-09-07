@@ -634,6 +634,66 @@ body {
   border-radius: var(--radius-sm);
 }
 
+/* Target Devices Bar on Main Tab */
+.target-devices-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: rgba(15, 23, 42, 0.65);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  gap: 8px;
+}
+
+.target-devices-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.3px;
+}
+
+.target-checkboxes-group {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.target-checkbox-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-tertiary);
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: all 0.2s ease;
+}
+
+.target-checkbox-pill input[type="checkbox"] {
+  accent-color: var(--accent-color);
+  cursor: pointer;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+}
+
+.target-checkbox-pill:hover {
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--text-primary);
+}
+
+.target-checkbox-pill.active {
+  border-color: rgba(99, 102, 241, 0.65);
+  background-color: rgba(99, 102, 241, 0.16);
+  color: #c7d2fe;
+}
+
 /* Destination Bar on Main Tab */
 .destination-bar {
   display: flex;

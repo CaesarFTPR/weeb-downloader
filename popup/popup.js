@@ -20,6 +20,8 @@ const DEFAULT_SETTINGS = {
   remotePath: '/mnt/us/koreader/',
   localDownloads: '~/Downloads',
   autoTransfer: false,
+  saveToPc: true,
+  saveToKindle: true,
   skipExisting: true
 };
 
@@ -83,6 +85,14 @@ const elements = {
   progressBar: document.getElementById('progress-bar'),
   btnCancelDownload: document.getElementById('btn-cancel-download'),
   btnDownload: document.getElementById('btn-download'),
+  btnDownloadLabel: document.getElementById('btn-download-label'),
+
+  // Target Devices Selector
+  targetSavePc: document.getElementById('target-save-pc'),
+  targetSaveKindle: document.getElementById('target-save-kindle'),
+  labelTargetPc: document.getElementById('label-target-pc'),
+  labelTargetKindle: document.getElementById('label-target-kindle'),
+  destinationBarContainer: document.getElementById('destination-bar-container'),
 
   // Kindle Transfer Card
   btnTransferKindle: document.getElementById('btn-transfer-kindle'),
@@ -214,6 +224,27 @@ function setupEventListeners() {
       hideDownloaded = !hideDownloaded;
       updateHideDownloadedButton();
       renderChapterList();
+    });
+  }
+
+  // Target Devices Checkboxes
+  if (elements.targetSavePc) {
+    elements.targetSavePc.addEventListener('change', () => {
+      if (!elements.targetSavePc.checked && !elements.targetSaveKindle.checked) {
+        elements.targetSaveKindle.checked = true;
+        showBanner('Select at least one destination (PC or Kindle)', 'info', 2000);
+      }
+      updateTargetDeviceUI();
+    });
+  }
+
+  if (elements.targetSaveKindle) {
+    elements.targetSaveKindle.addEventListener('change', () => {
+      if (!elements.targetSaveKindle.checked && !elements.targetSavePc.checked) {
+        elements.targetSavePc.checked = true;
+        showBanner('Select at least one destination (PC or Kindle)', 'info', 2000);
+      }
+      updateTargetDeviceUI();
     });
   }
 
@@ -377,6 +408,53 @@ function updateDestinationPathDisplay() {
 }
 
 /**
+ * Update target devices UI (PC / Kindle / Both)
+ */
+function updateTargetDeviceUI() {
+  const savePc = elements.targetSavePc ? elements.targetSavePc.checked : true;
+  const saveKindle = elements.targetSaveKindle ? elements.targetSaveKindle.checked : true;
+
+  if (elements.labelTargetPc) {
+    elements.labelTargetPc.classList.toggle('active', savePc);
+  }
+  if (elements.labelTargetKindle) {
+    elements.labelTargetKindle.classList.toggle('active', saveKindle);
+  }
+
+  if (elements.destinationBarContainer) {
+    if (!savePc && saveKindle) {
+      elements.destinationBarContainer.style.opacity = '0.55';
+      if (elements.destinationPathDisplay) {
+        elements.destinationPathDisplay.textContent = 'Direct to Kindle (/mnt/us/koreader/)';
+        elements.destinationPathDisplay.title = 'Manga will be transferred directly to Kindle and not saved on PC.';
+      }
+    } else {
+      elements.destinationBarContainer.style.opacity = '1';
+      updateDestinationPathDisplay();
+    }
+  }
+
+  if (elements.btnDownloadLabel) {
+    if (savePc && saveKindle) {
+      elements.btnDownloadLabel.textContent = 'Download to PC & Kindle';
+    } else if (savePc) {
+      elements.btnDownloadLabel.textContent = 'Download to PC';
+    } else if (saveKindle) {
+      elements.btnDownloadLabel.textContent = 'Download to Kindle';
+    }
+  }
+
+  currentSettings.saveToPc = savePc;
+  currentSettings.saveToKindle = saveKindle;
+  currentSettings.autoTransfer = saveKindle;
+  if (elements.settingAutoTransfer) {
+    elements.settingAutoTransfer.checked = saveKindle;
+  }
+
+  chrome.storage.sync.set({ weeb_kindle_settings: currentSettings }).catch(() => {});
+}
+
+/**
  * Open native OS folder picker dialog to select download directory
  */
 async function pickLocalDownloadFolder() {
@@ -488,6 +566,14 @@ async function loadSettings() {
   }
 
   updateDestinationPathDisplay();
+
+  if (elements.targetSavePc) {
+    elements.targetSavePc.checked = currentSettings.saveToPc !== false;
+  }
+  if (elements.targetSaveKindle) {
+    elements.targetSaveKindle.checked = currentSettings.saveToKindle !== false;
+  }
+  updateTargetDeviceUI();
 }
 
 /**
@@ -514,7 +600,9 @@ async function saveSettings() {
     sshKeyPath: elements.settingSshKeyPath.value.trim(),
     remotePath: elements.settingRemotePath.value.trim() || '/mnt/us/koreader/',
     localDownloads: elements.settingLocalDownloads.value.trim() || '~/Downloads',
-    autoTransfer: elements.settingAutoTransfer.checked
+    autoTransfer: elements.settingAutoTransfer.checked,
+    saveToPc: elements.targetSavePc ? elements.targetSavePc.checked : true,
+    saveToKindle: elements.targetSaveKindle ? elements.targetSaveKindle.checked : true
   };
 
   try {

@@ -1385,6 +1385,22 @@ def main():
                 path = req.get('path', '')
                 cleaned = cleanup_empty_dir(path)
                 send_message({'status': 'success', 'cleaned': cleaned})
+            elif action == 'delete_local_file':
+                file_path = req.get('path', '')
+                deleted = False
+                try:
+                    exp = os.path.expanduser(file_path)
+                    downloads_dir = os.path.expanduser('~/Downloads')
+                    if exp != downloads_dir:
+                        if os.path.isfile(exp):
+                            os.remove(exp)
+                            deleted = True
+                        elif os.path.isdir(exp):
+                            shutil.rmtree(exp, ignore_errors=True)
+                            deleted = True
+                except Exception:
+                    pass
+                send_message({'status': 'success', 'deleted': deleted})
             elif action == 'inspect_volume':
                 volume_path = req.get('volume_path', '')
                 result = inspect_volume(volume_path)

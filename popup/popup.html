@@ -116,8 +116,25 @@
           <button id="btn-cancel-download" class="btn btn-danger btn-sm mt-1">Cancel</button>
         </div>
 
+        <!-- Target Devices Selector Bar -->
+        <div class="target-devices-bar">
+          <span class="target-devices-label">Target:</span>
+          <div class="target-checkboxes-group">
+            <label class="target-checkbox-pill active" id="label-target-pc" title="Save downloaded manga on PC/Mac">
+              <input type="checkbox" id="target-save-pc" checked>
+              <span class="pill-icon">💻</span>
+              <span class="pill-text">PC</span>
+            </label>
+            <label class="target-checkbox-pill active" id="label-target-kindle" title="Transfer manga to Kindle via Wi-Fi (SSH/SCP)">
+              <input type="checkbox" id="target-save-kindle" checked>
+              <span class="pill-icon">📱</span>
+              <span class="pill-text">Kindle</span>
+            </label>
+          </div>
+        </div>
+
         <!-- Destination Directory Picker Bar -->
-        <div class="destination-bar">
+        <div id="destination-bar-container" class="destination-bar">
           <div class="destination-info" title="Current save folder on your computer">
             <span class="destination-icon">📁</span>
             <span id="destination-path-display" class="destination-path">~/Downloads/</span>
@@ -129,7 +146,7 @@
 
         <!-- Download Action Button -->
         <button id="btn-download" class="btn btn-primary btn-block">
-          <span class="btn-icon">📥</span> Download Selected
+          <span class="btn-icon">📥</span> <span id="btn-download-label">Download to PC & Kindle</span>
         </button>
 
         <!-- Kindle SSH Transfer Action Row -->

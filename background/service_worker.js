@@ -274,6 +274,11 @@ class StreamingTransferQueue {
             transferSuccess = true;
             this.completedCount++;
             console.log(`[WeebDownloader] Successfully transferred ${item.filename} to Kindle`);
+            if (item.settings.saveToPc === false && item.localFilePath) {
+              try {
+                await sendNativeMessage({ action: 'delete_local_file', path: item.localFilePath });
+              } catch (e) {}
+            }
             break;
           }
 
@@ -374,8 +379,11 @@ async function handleStartDownloadPipeline(payload) {
       if (!downloadState.cancelRequested) {
         const displayBase = downloadPaths.desiredDir.replace(/^\/Users\/[^/]+/, '~');
 
-        // If auto-transfer enabled, ensure all queued files finish uploading
-        if (settings.autoTransfer && transferQueue.totalEnqueued > 0) {
+        // Check if Kindle sync was requested
+        const saveToKindle = Boolean(settings.saveToKindle !== false && settings.autoTransfer);
+        const saveToPc = Boolean(settings.saveToPc !== false);
+
+        if (saveToKindle && transferQueue.totalEnqueued > 0) {
           if (transferQueue.hasPending()) {
             updateAndBroadcastProgress(
               `Finalizing Kindle Wi-Fi sync (${transferQueue.completedCount}/${transferQueue.totalEnqueued})...`,
@@ -385,7 +393,16 @@ async function handleStartDownloadPipeline(payload) {
           }
 
           downloadState.isCompleted = true;
-          if (transferQueue.lastError) {
+          if (!saveToPc) {
+            try {
+              await sendNativeMessage({ action: 'cleanup_empty_dir', path: downloadPaths.desiredDir });
+            } catch (e) {}
+            updateAndBroadcastProgress(
+              `🎉 Complete! All ${transferQueue.completedCount} chapters downloaded directly to Kindle!`,
+              100,
+              { isCompleted: true }
+            );
+          } else if (transferQueue.lastError) {
             updateAndBroadcastProgress(
               `🎉 Saved to ${displayBase}! (Kindle synced ${transferQueue.completedCount}/${transferQueue.totalEnqueued}, note: ${transferQueue.lastError})`,
               100,
@@ -393,7 +410,7 @@ async function handleStartDownloadPipeline(payload) {
             );
           } else {
             updateAndBroadcastProgress(
-              `🎉 Complete! All ${transferQueue.completedCount} chapters downloaded & synced to Kindle!`,
+              `🎉 Complete! All ${transferQueue.completedCount} chapters downloaded to PC & synced to Kindle!`,
               100,
               { isCompleted: true }
             );
@@ -917,7 +934,7 @@ ${navPointsXml}
       local_target_cbz: localVolumePath,
       delta_zip_path: localDeltaPath,
       remote_folder: remoteFolder,
-      auto_transfer: Boolean(settings.autoTransfer),
+      auto_transfer: Boolean(settings.saveToKindle !== false && settings.autoTransfer !== false),
       host: settings.sshHost,
       port: settings.sshPort,
       user: settings.sshUser,
@@ -928,7 +945,18 @@ ${navPointsXml}
     if (mergeRes && mergeRes.status === 'success') {
       const actionDesc = mergeRes.action === 'merged' ? 'Appended to' : 'Created';
       const kindleMsg = mergeRes.kindle_result?.message ? ` (${mergeRes.kindle_result.message})` : '';
-      updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName}!${kindleMsg}`, 100);
+
+      if (settings.saveToPc === false && mergeRes.kindle_result?.status === 'success') {
+        try {
+          await sendNativeMessage({ action: 'delete_local_file', path: localVolumePath });
+          await sendNativeMessage({ action: 'cleanup_empty_dir', path: downloadPaths.desiredDir });
+        } catch (e) {}
+        updateAndBroadcastProgress(`🎉 Synced directly to Kindle (${volumeName})!`, 100);
+      } else if (settings.saveToKindle !== false) {
+        updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName}!${kindleMsg}`, 100);
+      } else {
+        updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName} on PC!`, 100);
+      }
     } else {
       console.warn('[WeebDownloader] Merge warning:', mergeRes);
       updateAndBroadcastProgress(`Tome updated locally (${volumeName})`, 100);
