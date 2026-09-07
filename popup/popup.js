@@ -585,11 +585,11 @@ function updateSaveButtonState() {
       const isSaved = savedMangaList.some(m => m.seriesId === currentManga.seriesId) 
                    && !sessionRemovedIds.has(currentManga.seriesId);
       if (isSaved) {
-        elements.btnSaveMangaHeader.className = 'btn-toggle-save is-saved';
+        elements.btnSaveMangaHeader.className = 'btn-toggle-save btn-save-header is-saved';
         elements.btnSaveMangaHeader.textContent = '🗑️';
         elements.btnSaveMangaHeader.title = 'Удалить из списка';
       } else {
-        elements.btnSaveMangaHeader.className = 'btn-toggle-save is-not-saved';
+        elements.btnSaveMangaHeader.className = 'btn-toggle-save btn-save-header is-not-saved';
         elements.btnSaveMangaHeader.textContent = '➕';
         elements.btnSaveMangaHeader.title = 'Добавить в список';
       }
@@ -816,7 +816,6 @@ function renderSavedMangaList() {
           <div class="saved-item-sub">
             <span>${count} глав</span>
             ${isBrowserPinned ? '<span class="saved-badge-browser" title="Страница открыта во вкладке браузера">🌐 В браузере</span>' : ''}
-            ${isCurrent ? '<span class="saved-active-badge">Текущая</span>' : ''}
             ${isRemoved ? '<span class="saved-badge-removed">Удалена</span>' : ''}
           </div>
         </div>

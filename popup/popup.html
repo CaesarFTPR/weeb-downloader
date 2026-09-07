@@ -51,14 +51,13 @@
                 <h2 id="manga-title" class="manga-title" title="Manga Title">Loading manga...</h2>
                 <span class="manga-switch-arrow" id="manga-switch-arrow">▼</span>
               </div>
-              <button id="btn-save-manga-header" class="btn-toggle-save is-not-saved" type="button" title="Добавить в список сохранённых">➕</button>
             </div>
             <div class="manga-tags">
               <span id="chapter-count-badge" class="badge">0 chapters</span>
-              <span id="selection-count-badge" class="badge badge-accent">0 selected</span>
               <span id="reading-progress-badge" class="badge badge-reading hidden" title="Reading position in KOReader on Kindle">📖 Kindle: 0%</span>
             </div>
           </div>
+          <button id="btn-save-manga-header" class="btn-toggle-save btn-save-header is-not-saved" type="button" title="Добавить в список сохранённых">➕</button>
         </section>
 
         <!-- Saved Manga Dropdown Panel (Overlay) -->
@@ -94,6 +93,7 @@
           <button id="btn-select-new" class="btn-text" title="Select all chapters not yet downloaded">New</button>
           <span class="divider">|</span>
           <button id="btn-invert-selection" class="btn-text">Invert</button>
+          <span id="selection-count-badge" class="badge badge-accent selection-badge-toolbar">0 selected</span>
         </div>
         <div class="filter-toolbar-row">
           <div class="search-box-wrapper">
