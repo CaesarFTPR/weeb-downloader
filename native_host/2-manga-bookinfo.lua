@@ -1,6 +1,6 @@
 --[[--
   KOReader User Patch: Manga Dedicated Book Information Card
-  Version: 2.2.0
+  Version: 2.2.1
   Priority: 2 (Late - loaded after UIManager)
 
   Transforms KOReader's "Book Information" dialog for Manga/CBZ into a clean,
@@ -13,18 +13,20 @@
      - 2. Associated name(s) (Альтернативные названия)
      - 3. Связанные серии (Related series)
      - followed by Title, Author, Type, Status, Chapters, Year, Translation, Anime, 18+, Genres, Volume, Pages, Cover.
-  3. Fixes row tap callbacks: tapping any item (including Related series) opens its own TextViewer
+  3. Automatic Data Healing: Replaces all "Н/Д" / "N/A" / empty entries with actual metadata
+     scraped from WeebCentral (stored in custom_metadata.lua, metadata.cbz.lua, or ComicInfo).
+  4. Fixes row tap callbacks: tapping any item (including Related series) opens its own TextViewer
      instead of incorrectly opening the description!
-  4. Displays everything on a single, elegant screen without multi-page pagination.
-  5. Preserves 100% standard KOReader behavior for non-manga books (EPUB, PDF, FB2).
-  6. Bulletproof pcall error isolation to guarantee KOReader never crashes or freezes.
+  5. Displays everything on a single, elegant screen without multi-page pagination.
+  6. Preserves 100% standard KOReader behavior for non-manga books (EPUB, PDF, FB2).
+  7. Bulletproof pcall error isolation to guarantee KOReader never crashes or freezes.
 --]]--
 
 local ok_bi, BookInfo = pcall(require, "apps/filemanager/filemanagerbookinfo")
-if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.2.0" then
+if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.2.1" then
     return
 end
-BookInfo._manga_custom_patched = "2.2.0"
+BookInfo._manga_custom_patched = "2.2.1"
 
 local ok_bl, BookList = pcall(require, "ui/widget/booklist")
 local ok_ds, DocSettings = pcall(require, "docsettings")
@@ -101,6 +103,44 @@ local priority_map = {
     ["Cover image:"] = 17,
 }
 
+local label_to_prop = {
+    ["Описание:"] = "description",
+    ["Description:"] = "description",
+    ["Associated name(s):"] = "associated_names",
+    ["Associated names:"] = "associated_names",
+    ["Альтернативные названия:"] = "associated_names",
+    ["Связанные серии:"] = "related_series",
+    ["Related series:"] = "related_series",
+    ["Related Series(s):"] = "related_series",
+    ["Название:"] = "title",
+    ["Title:"] = "title",
+    ["Автор(ы):"] = "authors",
+    ["Author(s):"] = "authors",
+    ["Тип:"] = "manga_type",
+    ["Type:"] = "manga_type",
+    ["Статус:"] = "status",
+    ["Status:"] = "status",
+    ["Всего глав:"] = "total_chapters",
+    ["Total chapters:"] = "total_chapters",
+    ["Глав в томе:"] = "chapters_count",
+    ["Chapters count:"] = "chapters_count",
+    ["Том:"] = "series_index",
+    ["Индекс серий:"] = "series_index",
+    ["Series index:"] = "series_index",
+    ["Год релиза:"] = "released",
+    ["Released:"] = "released",
+    ["Офиц. перевод:"] = "official_translation",
+    ["Official translation:"] = "official_translation",
+    ["Аниме:"] = "anime_adaptation",
+    ["Anime:"] = "anime_adaptation",
+    ["18+ контент:"] = "adult_content",
+    ["Adult content:"] = "adult_content",
+    ["Ключевые слова:"] = "keywords",
+    ["Keywords:"] = "keywords",
+    ["Страниц:"] = "pages",
+    ["Pages:"] = "pages",
+}
+
 -- Fields to eliminate from Book Information for Manga (removes technical clutter and unwanted rows)
 local ignore_fields = {
     ["Имя файла:"] = true,
@@ -165,47 +205,100 @@ local function show_text_viewer(title, text)
     end
 end
 
+local function resolve_book_file(self, doc_settings_or_file)
+    if type(doc_settings_or_file) == "string" then
+        return doc_settings_or_file
+    end
+    if type(doc_settings_or_file) == "table" and doc_settings_or_file.readSetting then
+        local p = doc_settings_or_file:readSetting("doc_path")
+        if p and p ~= "" then return p end
+    end
+    if self.document and self.document.file then
+        return self.document.file
+    end
+    if self.ui and self.ui.doc_settings and self.ui.doc_settings.readSetting then
+        local p = self.ui.doc_settings:readSetting("doc_path")
+        if p and p ~= "" then return p end
+    end
+    return nil
+end
+
+local function load_real_props(file)
+    local props = {}
+    if not file or type(file) ~= "string" then return props end
+
+    local sdr = file:gsub("%.%w+$", ".sdr")
+    local candidates = {
+        sdr .. "/custom_metadata.lua",
+        sdr .. "/metadata.cbz.lua",
+        sdr .. "/metadata.zip.lua",
+    }
+
+    for _, path in ipairs(candidates) do
+        local ok, data = pcall(dofile, path)
+        if ok and type(data) == "table" then
+            local cp = data.custom_props or data.doc_props or data
+            if type(cp) == "table" then
+                for k, v in pairs(cp) do
+                    if (props[k] == nil or is_empty(props[k])) and not is_empty(v) then
+                        props[k] = v
+                    end
+                end
+            end
+        end
+    end
+    return props
+end
+
 -- Wrap BookInfo:show to cleanly transform the manga view and keep regular books standard
 local orig_show = BookInfo.show
 BookInfo.show = function(self, doc_settings_or_file, book_props)
-    local has_sidecar = type(doc_settings_or_file) == "table"
-    local file = has_sidecar and doc_settings_or_file.readSetting and doc_settings_or_file:readSetting("doc_path") or doc_settings_or_file
-    if not has_sidecar and self.document and self.document.file == file then
-        doc_settings_or_file = self.ui and self.ui.doc_settings
-        has_sidecar = type(doc_settings_or_file) == "table"
-    end
-    if not has_sidecar and file and ok_bl and BookList and BookList.hasBookBeenOpened and BookList.hasBookBeenOpened(file) then
-        doc_settings_or_file = BookList.getDocSettings(file)
-        has_sidecar = type(doc_settings_or_file) == "table"
-    end
+    local file = resolve_book_file(self, doc_settings_or_file)
+    local real_props = load_real_props(file)
 
     local is_manga = false
     if file and type(file) == "string" and (file:lower():match("%.cbz$") or file:lower():match("%.cbr$") or file:lower():match("%.zip$")) then
         is_manga = true
-    elseif has_sidecar and doc_settings_or_file and doc_settings_or_file.readSetting and doc_settings_or_file:readSetting("inverse_reading_order") == true then
+    elseif type(doc_settings_or_file) == "table" and doc_settings_or_file.readSetting and doc_settings_or_file:readSetting("inverse_reading_order") == true then
         is_manga = true
     elseif book_props and (book_props.manga_type or book_props.total_chapters or book_props.status or book_props.associated_names) then
         is_manga = true
+    elseif real_props and (real_props.manga_type or real_props.total_chapters or real_props.status or real_props.associated_names) then
+        is_manga = true
+    end
+
+    -- Hydrate book_props with real_props to prevent KOReader's "Н/Д"
+    book_props = book_props or {}
+    for k, v in pairs(real_props) do
+        if is_empty(book_props[k]) and not is_empty(v) then
+            book_props[k] = v
+        end
     end
 
     -- Extract passport fields from description text if missing in book_props
-    local desc_text = book_props and book_props.description
+    local desc_text = (book_props and book_props.description) or real_props.description
     if is_manga and desc_text and type(desc_text) == "string" then
-        book_props = book_props or {}
-        if not book_props.associated_names then
+        if is_empty(book_props.associated_names) then
             book_props.associated_names = desc_text:match("• Associated Name%(s%):%s*([^\n]+)")
                 or desc_text:match("• Альтернативные названия:%s*([^\n]+)")
                 or desc_text:match("• Другие названия:%s*([^\n]+)")
         end
-        if not book_props.related_series then book_props.related_series = desc_text:match("• Связанные серии:%s*([^\n]+)") end
-        if not book_props.status then book_props.status = desc_text:match("• Статус:%s*([^\n]+)") end
-        if not book_props.manga_type then book_props.manga_type = desc_text:match("• Тип:%s*([^\n]+)") end
-        if not book_props.released then book_props.released = desc_text:match("• Год релиза:%s*([^\n]+)") end
-        if not book_props.official_translation then book_props.official_translation = desc_text:match("• Официальный перевод:%s*([^\n]+)") end
-        if not book_props.anime_adaptation then book_props.anime_adaptation = desc_text:match("• Аниме%-адаптация:%s*([^\n]+)") end
-        if not book_props.adult_content then book_props.adult_content = desc_text:match("• 18%+ Контент:%s*([^\n]+)") end
-        if not book_props.total_chapters then book_props.total_chapters = desc_text:match("• Всего глав:%s*(%d+)") or desc_text:match("из (%d+) на сайте") end
-        if not book_props.chapters_count then book_props.chapters_count = desc_text:match("• Глав в томе:%s*(%d+)") end
+        if is_empty(book_props.related_series) then book_props.related_series = desc_text:match("• Связанные серии:%s*([^\n]+)") end
+        if is_empty(book_props.status) then book_props.status = desc_text:match("• Статус:%s*([^\n]+)") end
+        if is_empty(book_props.manga_type) then book_props.manga_type = desc_text:match("• Тип:%s*([^\n]+)") end
+        if is_empty(book_props.released) then book_props.released = desc_text:match("• Год релиза:%s*([^\n]+)") end
+        if is_empty(book_props.official_translation) then book_props.official_translation = desc_text:match("• Официальный перевод:%s*([^\n]+)") end
+        if is_empty(book_props.anime_adaptation) then book_props.anime_adaptation = desc_text:match("• Аниме%-адаптация:%s*([^\n]+)") end
+        if is_empty(book_props.adult_content) then book_props.adult_content = desc_text:match("• 18%+ Контент:%s*([^\n]+)") end
+        if is_empty(book_props.total_chapters) then book_props.total_chapters = desc_text:match("• Всего глав:%s*(%d+)") or desc_text:match("из (%d+) на сайте") end
+        if is_empty(book_props.chapters_count) then book_props.chapters_count = desc_text:match("• Глав в томе:%s*(%d+)") end
+    end
+
+    -- Keep real_props in sync with any parsed values
+    for k, v in pairs(book_props) do
+        if not is_empty(v) and is_empty(real_props[k]) then
+            real_props[k] = v
+        end
     end
 
     local ok_kvp, KeyValuePage = pcall(require, "ui/widget/keyvaluepage")
@@ -243,37 +336,74 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
 
             -- Dedicated Manga Card transformation
             local kept = {}
-            local series_idx_pair = nil
-            local has_type = false
+            local seen_props = {}
+            local cover_pair = nil
 
             for pair_idx, pair in ipairs(options.kv_pairs) do
                 local label = pair[1] or ""
                 local clean = strip_icon(label)
                 local val = pair[2]
 
-                if not should_ignore(clean) and not is_empty(val) then
-                    if clean == "Тип:" or clean == "Type:" or clean:find("Тип", 1, true) or clean:find("Type", 1, true) then
-                        has_type = true
+                if clean:find("Обложка", 1, true) or clean:find("Cover", 1, true) then
+                    cover_pair = pair
+                elseif not should_ignore(clean) then
+                    -- Heal "Н/Д" or empty values with actual metadata from real_props
+                    if is_empty(val) then
+                        local pkey = label_to_prop[clean]
+                        if pkey and not is_empty(real_props[pkey]) then
+                            val = tostring(real_props[pkey])
+                            pair[2] = val
+                        end
+                    end
+
+                    if not is_empty(val) then
+                        if clean:find("Индекс", 1, true) then
+                            clean = "Том:"
+                            pair[1] = "Том:"
+                        end
                         table.insert(kept, pair)
-                    elseif clean == "Индекс серий:" or clean == "Series index:" or clean:find("Индекс", 1, true) then
-                        series_idx_pair = pair
-                    else
-                        table.insert(kept, pair)
+                        local pkey = label_to_prop[clean]
+                        if pkey then seen_props[pkey] = true end
                     end
                 end
             end
 
-            -- Default manga type to "Manga" if not specified
-            if not has_type then
-                local def_val = (book_props and book_props.manga_type) or "Manga"
+            -- Inject any missing manga fields directly from real_props
+            local default_prop_labels = {
+                { key = "description",          label = "Описание:" },
+                { key = "associated_names",     label = "Associated name(s):" },
+                { key = "related_series",       label = "Связанные серии:" },
+                { key = "title",                label = "Название:" },
+                { key = "authors",              label = "Автор(ы):" },
+                { key = "manga_type",           label = "Тип:" },
+                { key = "status",               label = "Статус:" },
+                { key = "total_chapters",       label = "Всего глав:" },
+                { key = "chapters_count",       label = "Глав в томе:" },
+                { key = "series_index",         label = "Том:" },
+                { key = "released",             label = "Год релиза:" },
+                { key = "official_translation", label = "Офиц. перевод:" },
+                { key = "anime_adaptation",     label = "Аниме:" },
+                { key = "adult_content",        label = "18+ контент:" },
+                { key = "keywords",             label = "Ключевые слова:" },
+                { key = "pages",                label = "Страниц:" },
+            }
+
+            for _, item in ipairs(default_prop_labels) do
+                if not seen_props[item.key] and not is_empty(real_props[item.key]) then
+                    table.insert(kept, { item.label, tostring(real_props[item.key]) })
+                    seen_props[item.key] = true
+                end
+            end
+
+            -- Ensure Manga type is present
+            if not seen_props["manga_type"] then
+                local def_val = real_props.manga_type or (book_props and book_props.manga_type) or "Manga"
                 table.insert(kept, { "Тип:", def_val })
             end
 
-            if series_idx_pair then
-                local label_str = tostring(series_idx_pair[1] or "")
-                local p_icon = label_str:find("\u{F040}") and "\u{F040} " or ""
-                series_idx_pair[1] = p_icon .. "Том:"
-                table.insert(kept, series_idx_pair)
+            -- Add cover pair if present
+            if cover_pair then
+                table.insert(kept, cover_pair)
             end
 
             -- Sort by Manga priority map (Description, Associated names, Related series at top)
