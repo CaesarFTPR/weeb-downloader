@@ -733,6 +733,11 @@ async function toggleMangaSavedState(seriesId) {
       title: source.title || 'Untitled Manga',
       coverUrl: source.coverUrl || '../icons/icon128.png',
       url: source.url || source.currentUrl || '',
+      author: source.author || '',
+      artist: source.artist || source.author || '',
+      description: source.description || '',
+      genres: source.genres || '',
+      status: source.status || 'Ongoing',
       chapterCount: (source.chapters && source.chapters.length) || source.chapterCount || 0,
       chapters: source.chapters || [],
       savedAt: Date.now()
@@ -939,7 +944,12 @@ async function switchToSavedManga(seriesId, silent = false) {
     seriesId: target.seriesId,
     title: target.title,
     coverUrl: target.coverUrl,
-    currentUrl: target.url || target.currentUrl || ''
+    currentUrl: target.url || target.currentUrl || '',
+    author: target.author || '',
+    artist: target.artist || target.author || '',
+    description: target.description || '',
+    genres: target.genres || '',
+    status: target.status || 'Ongoing'
   };
 
   elements.mangaTitle.textContent = currentManga.title;

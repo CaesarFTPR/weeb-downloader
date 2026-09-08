@@ -122,6 +122,59 @@ async function getMangaInfo() {
     else if (/ongoing/i.test(txt)) status = 'Ongoing';
   }
 
+  // If author, description, genres or cover are missing (e.g. on /chapters/... page), fetch series page
+  if ((!author || !description || genres.length === 0 || !coverUrl) && seriesId) {
+    try {
+      const seriesPageResp = await fetch(`https://weebcentral.com/series/${seriesId}`);
+      if (seriesPageResp.ok) {
+        const sHtml = await seriesPageResp.text();
+        const sDoc = new DOMParser().parseFromString(sHtml, 'text/html');
+
+        if (!title || title === 'Manga') {
+          const sh1 = sDoc.querySelector('h1');
+          if (sh1) title = sh1.textContent.trim();
+        }
+
+        if (!coverUrl) {
+          const scoverEl = sDoc.querySelector('section[x-data] img, article img, img[alt*="Cover"]');
+          if (scoverEl) coverUrl = scoverEl.src || scoverEl.getAttribute('srcset') || '';
+        }
+
+        if (!description) {
+          const sogDesc = sDoc.querySelector('meta[property="og:description"]');
+          if (sogDesc && sogDesc.content) description = sogDesc.content.trim();
+          if (!description) {
+            const sdescEl = sDoc.querySelector('section[x-data] p, article p, [x-show*="description"]');
+            if (sdescEl) description = sdescEl.textContent.trim();
+          }
+        }
+
+        if (!author) {
+          const sauthorLinks = sDoc.querySelectorAll('a[href*="author="], a[href*="/author/"]');
+          if (sauthorLinks.length > 0) {
+            author = Array.from(sauthorLinks).map(a => a.textContent.trim()).filter(Boolean).join(', ');
+          }
+        }
+
+        if (genres.length === 0) {
+          const sgenreLinks = sDoc.querySelectorAll('a[href*="genre="], a[href*="/genre/"], a[href*="/tag/"]');
+          genres = Array.from(sgenreLinks).map(a => a.textContent.trim()).filter(Boolean);
+        }
+
+        if (status === 'Ongoing') {
+          const sstatusEl = sDoc.querySelector('[class*="status"], a[href*="status="]');
+          if (sstatusEl) {
+            const stxt = sstatusEl.textContent.trim();
+            if (/completed/i.test(stxt)) status = 'Completed';
+            else if (/ongoing/i.test(stxt)) status = 'Ongoing';
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[WeebDownloader] Series metadata fetch note:', err);
+    }
+  }
+
   // Clean title for folder safety
   const safeTitle = title.replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim();
 

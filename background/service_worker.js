@@ -316,7 +316,8 @@ class StreamingTransferQueue {
             local_path: item.localFilePath,
             remote_path: item.remoteFolder,
             password: item.settings.sshPassword,
-            key_path: item.settings.sshKeyPath
+            key_path: item.settings.sshKeyPath,
+            metadata: item.metadata
           });
 
           if (res && res.status === 'success') {
@@ -436,6 +437,8 @@ async function handleStartDownloadPipeline(payload) {
     }
 
     try {
+      manga = await enrichMangaMetadata(manga);
+
       if ((packageMode === 'cumulative_tome' || packageMode === 'single_volume') && (format === 'cbz' || format === 'zip')) {
         await downloadCumulativeTome(tabId, chapters, downloadPaths, format, manga, settings, transferQueue);
       } else {
@@ -703,6 +706,24 @@ ${summaryXml}${writerXml}${artistXml}${genreXml}  <PageCount>${pageImages.length
         }
       }
 
+      const chapterMeta = {
+        title: chapterTitle || manga.title,
+        series: manga.title,
+        authors: manga.author || manga.artist || '',
+        description: manga.description || '',
+        keywords: manga.genres || '',
+        language: 'en'
+      };
+
+      // If saving locally to PC, ensure local KOReader sidecar is generated with RTL manga order
+      if (Boolean(settings.saveToPc !== false) && (format === 'cbz' || format === 'zip')) {
+        sendNativeMessage({
+          action: 'fix_koreader_metadata',
+          local_path: finalLocalFilePath,
+          metadata: chapterMeta
+        }).catch(() => {});
+      }
+
       // STREAMING TRANSFER: Send this chapter to Kindle immediately while next chapter downloads!
       if (Boolean(settings.saveToKindle !== false) && transferQueue) {
         const remoteFolder = `${settings.remotePath.replace(/\/+$/, '')}/${downloadState.targetFolder}/`;
@@ -711,7 +732,8 @@ ${summaryXml}${writerXml}${artistXml}${genreXml}  <PageCount>${pageImages.length
           localFilePath: finalLocalFilePath,
           remoteFolder,
           filename: realFilename,
-          settings
+          settings,
+          metadata: chapterMeta
         });
       }
     } else {
@@ -1206,7 +1228,15 @@ ${navPointsXml}
         user: settings.sshUser,
         password: settings.sshPassword,
         key_path: settings.sshKeyPath,
-        known_remote_path: knownRemotePath
+        known_remote_path: knownRemotePath,
+        metadata: {
+          title: manga.title,
+          series: manga.title,
+          authors: manga.author || manga.artist || '',
+          description: manga.description || '',
+          keywords: manga.genres || '',
+          language: 'en'
+        }
       });
 
       if (mergeRes && mergeRes.kindle_result && mergeRes.kindle_result.remote_target_path) {
@@ -2255,6 +2285,62 @@ function escapeXml(unsafe) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function unescapeXml(safe) {
+  if (!safe) return '';
+  return String(safe)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'");
+}
+
+/**
+ * Fetch series metadata (synopsis, author, genres) from WeebCentral if missing
+ */
+async function enrichMangaMetadata(manga) {
+  if (!manga || !manga.seriesId) return manga;
+  if (manga.author && manga.description && manga.genres) return manga;
+
+  try {
+    const seriesUrl = `https://weebcentral.com/series/${manga.seriesId}`;
+    const resp = await fetch(seriesUrl, {
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml',
+        'X-Requested-With': 'XMLHttpRequest'
+      }
+    });
+    if (resp.ok) {
+      const html = await resp.text();
+      if (!manga.description) {
+        const ogMatch = html.match(/<meta\s+property=["']og:description["']\s+content=["']([^"']+)["']/i);
+        if (ogMatch && ogMatch[1]) {
+          manga.description = unescapeXml(ogMatch[1]).trim();
+        }
+      }
+      if (!manga.author) {
+        const authorMatches = [...html.matchAll(/href=["'][^"']*(?:author=|(?:\/author\/))[^"']*["'][^>]*>([^<]+)<\/a>/gi)];
+        if (authorMatches.length > 0) {
+          const authors = authorMatches.map(m => unescapeXml(m[1]).trim()).filter(Boolean);
+          manga.author = Array.from(new Set(authors)).join(', ');
+          manga.artist = manga.artist || manga.author;
+        }
+      }
+      if (!manga.genres) {
+        const genreMatches = [...html.matchAll(/href=["'][^"']*(?:genre=|tag=|(?:\/genre\/)|(?:\/tag\/))[^"']*["'][^>]*>([^<]+)<\/a>/gi)];
+        if (genreMatches.length > 0) {
+          const genres = genreMatches.map(m => unescapeXml(m[1]).trim()).filter(Boolean);
+          manga.genres = Array.from(new Set(genres)).join(', ');
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[WeebDownloader] enrichMangaMetadata note:', err);
+  }
+  return manga;
 }
 
 function getExtensionFromUrl(url, mime) {

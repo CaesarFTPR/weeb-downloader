@@ -17,6 +17,7 @@ import tarfile
 import zipfile
 import re
 import xml.etree.ElementTree as ET
+import html
 import time
 import base64
 
@@ -296,7 +297,160 @@ def get_remote_files(host, port, user, remote_folder, password=None, key_path=No
         pass
     return None
 
-def scp_transfer(host, port, user, local_path, remote_path, password=None, key_path=None, force_overwrite=False):
+def extract_metadata_from_cbz(cbz_path):
+    """
+    Extracts ComicInfo.xml metadata and page count from a CBZ or ZIP archive.
+    """
+    meta = {
+        'title': None,
+        'series': None,
+        'authors': None,
+        'description': None,
+        'keywords': None,
+        'language': 'en',
+        'pages': 0
+    }
+    if not os.path.exists(cbz_path) or not os.path.isfile(cbz_path):
+        return meta
+
+    try:
+        with zipfile.ZipFile(cbz_path, 'r') as zf:
+            page_count = 0
+            comic_info_xml = None
+            for name in zf.namelist():
+                ext = os.path.splitext(name)[1].lower()
+                if ext in ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif'):
+                    page_count += 1
+                if name.lower() == 'comicinfo.xml' and not comic_info_xml:
+                    try:
+                        comic_info_xml = zf.read(name).decode('utf-8', errors='ignore')
+                    except Exception:
+                        pass
+            meta['pages'] = page_count
+
+            if comic_info_xml:
+                try:
+                    root = ET.fromstring(comic_info_xml)
+                    title = root.findtext('Title') or root.findtext('Series')
+                    series = root.findtext('Series') or root.findtext('Title')
+                    writer = root.findtext('Writer') or root.findtext('Penciller')
+                    summary = root.findtext('Summary')
+                    genre = root.findtext('Genre')
+                    if title: meta['title'] = html.unescape(title).strip()
+                    if series: meta['series'] = html.unescape(series).strip()
+                    if writer: meta['authors'] = html.unescape(writer).strip()
+                    if summary: meta['description'] = html.unescape(summary).strip()
+                    if genre: meta['keywords'] = html.unescape(genre).strip()
+                except Exception as e:
+                    log_debug(f"XML parse error in {cbz_path}: {e}")
+    except Exception as e:
+        log_debug(f"extract_metadata_from_cbz error: {e}")
+
+    base_no_ext = os.path.splitext(os.path.basename(cbz_path))[0]
+    if not meta['title']:
+        meta['title'] = base_no_ext
+    if not meta['series']:
+        meta['series'] = meta['title']
+    return meta
+
+def serialize_lua_val_py(val, indent=0):
+    ind = "    " * indent
+    if isinstance(val, dict):
+        parts = ["{\n"]
+        for k, v in val.items():
+            if isinstance(k, int):
+                k_str = f"[{k}]"
+            else:
+                k_str = f"[{json.dumps(str(k))}]"
+            parts.append(f"{ind}    {k_str} = {serialize_lua_val_py(v, indent + 1)},\n")
+        parts.append(f"{ind}}}")
+        return "".join(parts)
+    elif isinstance(val, bool):
+        return "true" if val else "false"
+    elif isinstance(val, (int, float)):
+        return str(val)
+    elif isinstance(val, str):
+        return json.dumps(val)
+    return "nil"
+
+def ensure_koreader_sidecar_local(cbz_path, metadata=None):
+    """
+    Creates/updates KOReader companion sidecar files on PC:
+    <book_path_without_ext>.sdr/metadata.cbz.lua and metadata.zip.lua
+    - Enforces inverse_reading_order = true (RTL manga mode)
+    - Sets doc_props (title, display_title, series, authors, description, keywords, language, pages)
+    - Preserves existing reading progress (last_page, percent_finished, bookmarks, etc.)
+    """
+    if not cbz_path or not os.path.exists(cbz_path) or not os.path.isfile(cbz_path):
+        return None
+    stem = os.path.splitext(cbz_path)[0]
+    sdr_dir = f"{stem}.sdr"
+    os.makedirs(sdr_dir, exist_ok=True)
+    meta_cbz = os.path.join(sdr_dir, "metadata.cbz.lua")
+    meta_zip = os.path.join(sdr_dir, "metadata.zip.lua")
+
+    extracted = extract_metadata_from_cbz(cbz_path)
+    if metadata and isinstance(metadata, dict):
+        for k in ('title', 'series', 'authors', 'description', 'keywords', 'language'):
+            v = metadata.get(k)
+            if v:
+                extracted[k] = str(v).strip()
+
+    existing_text = ""
+    target_meta_file = meta_cbz if os.path.exists(meta_cbz) else (meta_zip if os.path.exists(meta_zip) else None)
+    if target_meta_file:
+        try:
+            with open(target_meta_file, 'r', encoding='utf-8', errors='ignore') as f:
+                existing_text = f.read()
+        except Exception:
+            pass
+
+    preserved_fields = {}
+    if existing_text:
+        for field in ('last_page', 'page', 'percent_finished', 'summary', 'highlight', 'bookmarks', 'stats'):
+            m = re.search(rf'\["{field}"\]\s*=\s*([^,\n]+)', existing_text)
+            if m:
+                raw = m.group(1).strip()
+                try:
+                    if raw == 'true': preserved_fields[field] = True
+                    elif raw == 'false': preserved_fields[field] = False
+                    elif '.' in raw: preserved_fields[field] = float(raw)
+                    else: preserved_fields[field] = int(raw)
+                except Exception:
+                    pass
+
+    data = {
+        "inverse_reading_order": True,
+        "doc_props": {
+            "title": extracted.get('title') or os.path.basename(stem),
+            "display_title": extracted.get('title') or os.path.basename(stem),
+            "series": extracted.get('series') or extracted.get('title') or os.path.basename(stem),
+            "language": extracted.get('language') or "en"
+        }
+    }
+    if extracted.get('authors'):
+        data["doc_props"]["authors"] = extracted['authors']
+    if extracted.get('description'):
+        data["doc_props"]["description"] = extracted['description']
+    if extracted.get('keywords'):
+        data["doc_props"]["keywords"] = extracted['keywords']
+    if extracted.get('pages', 0) > 0:
+        data["doc_props"]["pages"] = extracted['pages']
+
+    for k, v in preserved_fields.items():
+        data[k] = v
+
+    lua_content = "-- Generated by WeebCentral Kindle Downloader\nreturn " + serialize_lua_val_py(data, 0) + "\n"
+    for p in (meta_cbz, meta_zip):
+        try:
+            with open(p, 'w', encoding='utf-8') as f:
+                f.write(lua_content)
+        except Exception as e:
+            log_debug(f"ensure_koreader_sidecar_local write error to {p}: {e}")
+
+    return sdr_dir
+
+def scp_transfer(host, port, user, local_path, remote_path, password=None, key_path=None, force_overwrite=False, metadata=None):
     """
     Transfer folder or single file to Kindle via SCP with smart incremental sync.
     Supports:
@@ -455,6 +609,21 @@ end tell
         remote_files = get_remote_files(host, port, user, remote_folder, password=password, key_path=key_path)
 
         if not force_overwrite and remote_files is not None and base_name in remote_files:
+            # File is up to date, but ensure KOReader metadata & RTL sidecars are set
+            ensure_koreader_sidecar_local(expanded_local, metadata=metadata)
+            try:
+                ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
+                fix_meta_cmd = [
+                    ssh_bin,
+                    '-o', 'ConnectTimeout=4',
+                    '-o', 'StrictHostKeyChecking=accept-new',
+                    '-p', str(port),
+                    f'{user}@{host}',
+                    f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --fix-meta '{remote_dest_item}' 2>/dev/null || true"
+                ]
+                execute_with_auth(fix_meta_cmd, password=password, key_path=key_path, timeout=8)
+            except Exception:
+                pass
             return {
                 'status': 'success',
                 'message': f'{base_name} is already up-to-date on Kindle!'
@@ -475,6 +644,41 @@ end tell
                     f"touch '{remote_dest_item}' 2>/dev/null || true"
                 ]
                 execute_with_auth(touch_cmd, password=password, key_path=key_path, timeout=5)
+
+                # Ensure KOReader sidecar is synced and RTL metadata is applied
+                try:
+                    ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
+                    stem_name = os.path.splitext(base_name)[0]
+                    local_sdr = f"{os.path.splitext(expanded_local)[0]}.sdr"
+                    if os.path.isdir(local_sdr):
+                        remote_sdr = f"{clean_remote}{stem_name}.sdr"
+                        sdr_mkdir_cmd = [
+                            ssh_bin,
+                            '-o', 'ConnectTimeout=4',
+                            '-o', 'StrictHostKeyChecking=accept-new',
+                            '-p', str(port),
+                            f'{user}@{host}',
+                            f"mkdir -p '{remote_sdr}' 2>/dev/null || true"
+                        ]
+                        execute_with_auth(sdr_mkdir_cmd, password=password, key_path=key_path, timeout=5)
+                        for meta_name in ("metadata.cbz.lua", "metadata.zip.lua"):
+                            local_meta = os.path.join(local_sdr, meta_name)
+                            if os.path.exists(local_meta):
+                                sdr_scp_cmd = [scp_bin] + auth_flags + [local_meta, f'{user}@{host}:{remote_sdr}/{meta_name}']
+                                execute_with_auth(sdr_scp_cmd, password=password, key_path=key_path, timeout=10)
+
+                    # Also run --fix-meta on Kindle to guarantee RTL and doc_props
+                    fix_meta_cmd = [
+                        ssh_bin,
+                        '-o', 'ConnectTimeout=4',
+                        '-o', 'StrictHostKeyChecking=accept-new',
+                        '-p', str(port),
+                        f'{user}@{host}',
+                        f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --fix-meta '{remote_dest_item}' 2>/dev/null || true"
+                    ]
+                    execute_with_auth(fix_meta_cmd, password=password, key_path=key_path, timeout=8)
+                except Exception as meta_err:
+                    log_debug(f"Sidecar sync note: {meta_err}")
 
                 return {
                     'status': 'success',
@@ -739,6 +943,11 @@ def inspect_volume(volume_path):
         }
 
     try:
+        ensure_koreader_sidecar_local(exp_path)
+    except Exception:
+        pass
+
+    try:
         with zipfile.ZipFile(exp_path, 'r') as zf:
             namelist = zf.namelist()
             folders = set()
@@ -795,7 +1004,7 @@ def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        "if grep -q -- 'version: 3.2.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+        "if grep -q -- 'version: 3.3.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
     ]
     check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
     if not check_res or check_res.returncode != 0:
@@ -1336,7 +1545,7 @@ def binary_zip_append_filter(target_path, delta_path):
         f_target.write(new_eocd)
         f_target.truncate()
 
-def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_to_pc=True, save_to_kindle=True, auto_transfer=None, host='kindle.local', port=2222, user='root', password=None, key_path=None, known_remote_path=None):
+def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_to_pc=True, save_to_kindle=True, auto_transfer=None, host='kindle.local', port=2222, user='root', password=None, key_path=None, known_remote_path=None, metadata=None):
     """
     Appends delta_zip into local_target_cbz on PC via instant binary append (O(delta)) if save_to_pc is True.
     Smartly de-duplicates existing chapter copies and avoids duplicating content.
@@ -1402,6 +1611,12 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
                         os.remove(tmp_target)
                     return {'status': 'error', 'message': f'Failed to merge local volume: {str(e)}'}
 
+        # Ensure local KOReader sidecar is generated with RTL manga order & metadata
+        try:
+            ensure_koreader_sidecar_local(exp_target, metadata=metadata)
+        except Exception as sidecar_err:
+            log_debug(f"Local sidecar error: {sidecar_err}")
+
     # 2. Sync to Kindle
     kindle_result = None
     if save_to_kindle:
@@ -1459,7 +1674,7 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
                 file_to_send = temp_send_file
 
             try:
-                kindle_result = scp_transfer(host, port, user, file_to_send, dest_dir, password=password, key_path=key_path, force_overwrite=True)
+                kindle_result = scp_transfer(host, port, user, file_to_send, dest_dir, password=password, key_path=key_path, force_overwrite=True, metadata=metadata)
                 if kindle_result and kindle_result.get('status') == 'success':
                     remote_dest = f"{dest_dir.rstrip('/')}/{filename}"
                     kindle_result['remote_target_path'] = remote_dest
@@ -1498,6 +1713,30 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
                     if out_lines:
                         res_json = json.loads(out_lines[-1])
                         if res_json.get('status') == 'success':
+                            # Sync local sidecar if present
+                            try:
+                                stem_name = os.path.splitext(os.path.basename(remote_target_path))[0]
+                                remote_folder_path = os.path.dirname(remote_target_path)
+                                local_sdr = f"{os.path.splitext(exp_target)[0]}.sdr"
+                                if os.path.isdir(local_sdr):
+                                    remote_sdr = f"{remote_folder_path}/{stem_name}.sdr"
+                                    sdr_mkdir_cmd = [
+                                        ssh_bin,
+                                        '-o', 'ConnectTimeout=4',
+                                        '-o', 'StrictHostKeyChecking=accept-new',
+                                        '-p', str(port),
+                                        f'{user}@{host}',
+                                        f"mkdir -p '{remote_sdr}' 2>/dev/null || true"
+                                    ]
+                                    execute_with_auth(sdr_mkdir_cmd, password=password, key_path=key_path, timeout=5)
+                                    for meta_name in ("metadata.cbz.lua", "metadata.zip.lua"):
+                                        loc_meta = os.path.join(local_sdr, meta_name)
+                                        if os.path.exists(loc_meta):
+                                            sdr_scp_cmd = [scp_bin] + auth_flags + [loc_meta, f'{user}@{host}:{remote_sdr}/{meta_name}']
+                                            execute_with_auth(sdr_scp_cmd, password=password, key_path=key_path, timeout=10)
+                            except Exception as sidecar_err:
+                                log_debug(f"Sidecar sync note on merge: {sidecar_err}")
+
                             kindle_result = {
                                 'status': 'success',
                                 'message': f'Appended new chapter(s) to {os.path.basename(remote_target_path)} on Kindle!',
@@ -1776,7 +2015,8 @@ def main():
                 local_path = req.get('local_path', '')
                 remote_path = req.get('remote_path', '/mnt/us/koreader/')
                 force_overwrite = req.get('force_overwrite', False)
-                result = scp_transfer(host, port, user, local_path, remote_path, password=password, key_path=key_path, force_overwrite=force_overwrite)
+                metadata = req.get('metadata')
+                result = scp_transfer(host, port, user, local_path, remote_path, password=password, key_path=key_path, force_overwrite=force_overwrite, metadata=metadata)
                 send_message(result)
             elif action == 'list_files':
                 path = req.get('path', '')
@@ -1857,6 +2097,7 @@ def main():
                 save_to_pc = req.get('save_to_pc', True)
                 save_to_kindle = req.get('save_to_kindle', req.get('auto_transfer', True))
                 known_remote_path = req.get('known_remote_path') or None
+                metadata = req.get('metadata')
                 result = append_to_volume(
                     local_target_cbz,
                     delta_zip_path,
@@ -1868,9 +2109,31 @@ def main():
                     user=user,
                     password=password,
                     key_path=key_path,
-                    known_remote_path=known_remote_path
+                    known_remote_path=known_remote_path,
+                    metadata=metadata
                 )
                 send_message(result)
+            elif action == 'fix_koreader_metadata':
+                local_path = req.get('local_path')
+                remote_path = req.get('remote_path')
+                metadata = req.get('metadata')
+                if local_path:
+                    ensure_koreader_sidecar_local(local_path, metadata=metadata)
+                if remote_path:
+                    try:
+                        ensure_remote_merge_script(host, port, user, password=password, key_path=key_path)
+                        fix_cmd = [
+                            shutil.which('ssh') or '/usr/bin/ssh',
+                            '-o', 'ConnectTimeout=4',
+                            '-o', 'StrictHostKeyChecking=accept-new',
+                            '-p', str(port),
+                            f'{user}@{host}',
+                            f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --fix-meta '{remote_path}' 2>/dev/null || true"
+                        ]
+                        execute_with_auth(fix_cmd, password=password, key_path=key_path, timeout=8)
+                    except Exception:
+                        pass
+                send_message({'status': 'success'})
             elif action == 'delete_chapters':
                 target = req.get('target', 'pc')
                 local_folder = req.get('local_folder', '')
