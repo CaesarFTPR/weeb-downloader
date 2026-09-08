@@ -6,10 +6,10 @@ const DEFAULT_SETTINGS = {
   folderName: '{title}',
   optimizeKindle: true,
   optimizedFormat: 'webp',
-  maxResolution: 1200,
+  maxResolution: 1648,
   imageQuality: 0.50,
   autoCrop: true,
-  despeckle: true,
+  despeckle: false,
   grayscale: true,
   cleanPaper: true,
   sharpenEink: false,
@@ -1087,23 +1087,18 @@ async function loadSettings() {
     const stored = await chrome.storage.sync.get('weeb_kindle_settings');
     if (stored && stored.weeb_kindle_settings) {
       currentSettings = { ...DEFAULT_SETTINGS, ...stored.weeb_kindle_settings };
-      // Automatic migration: If the user still has old default 1680px/1448px or quality >= 0.60,
-      // migrate to the new ultra-compact settings (1200px, 0.50, despeckle=true, sharpen=false).
+      // Automatic migration: Ensure Kindle Paperwhite 11 screen profile (1236x1648, 1:1 native)
+      // and disable line-softening filters (despeckle=false, sharpen=false) for 100% font/art clarity.
       let migrated = false;
-      if (currentSettings.maxResolution === 1680 || currentSettings.maxResolution === 1448) {
-        currentSettings.maxResolution = 1200;
-        migrated = true;
-      }
-      if (currentSettings.imageQuality === 0.75 || currentSettings.imageQuality === 0.60) {
+      if (currentSettings.kindleProfileVersion !== 3) {
+        currentSettings.maxResolution = 1648;
+        currentSettings.despeckle = false;
+        currentSettings.sharpenEink = false;
         currentSettings.imageQuality = 0.50;
-        migrated = true;
-      }
-      if (currentSettings.despeckle === undefined) {
-        currentSettings.despeckle = true;
+        currentSettings.kindleProfileVersion = 3;
         migrated = true;
       }
       if (migrated) {
-        currentSettings.sharpenEink = false;
         await chrome.storage.sync.set({ weeb_kindle_settings: currentSettings }).catch(() => {});
       }
     }
@@ -1137,7 +1132,7 @@ async function loadSettings() {
     elements.settingOptimizedFormat.value = currentSettings.optimizedFormat || 'webp';
   }
   if (elements.settingMaxResolution) {
-    elements.settingMaxResolution.value = String(currentSettings.maxResolution !== undefined ? currentSettings.maxResolution : 1200);
+    elements.settingMaxResolution.value = String(currentSettings.maxResolution !== undefined ? currentSettings.maxResolution : 1648);
   }
   if (elements.settingImageQuality) {
     elements.settingImageQuality.value = String(currentSettings.imageQuality !== undefined ? currentSettings.imageQuality : 0.50);
@@ -1146,7 +1141,7 @@ async function loadSettings() {
     elements.settingAutoCrop.checked = currentSettings.autoCrop !== false;
   }
   if (elements.settingDespeckle) {
-    elements.settingDespeckle.checked = currentSettings.despeckle !== false;
+    elements.settingDespeckle.checked = Boolean(currentSettings.despeckle);
   }
   if (elements.settingFilenameTemplate) {
     elements.settingFilenameTemplate.value = currentSettings.filenameTemplate || '{chapter}';
@@ -1158,7 +1153,7 @@ async function loadSettings() {
     elements.settingCleanPaper.checked = currentSettings.cleanPaper !== false;
   }
   if (elements.settingSharpenEink) {
-    elements.settingSharpenEink.checked = currentSettings.sharpenEink === true;
+    elements.settingSharpenEink.checked = Boolean(currentSettings.sharpenEink);
   }
 
   updateDestinationPathDisplay();
@@ -1184,13 +1179,14 @@ async function saveSettings() {
     skipExisting: elements.settingSkipExisting ? elements.settingSkipExisting.checked : true,
     optimizeKindle: elements.settingOptimizeKindle ? elements.settingOptimizeKindle.checked : true,
     optimizedFormat: elements.settingOptimizedFormat ? elements.settingOptimizedFormat.value : 'webp',
-    maxResolution: elements.settingMaxResolution ? parseInt(elements.settingMaxResolution.value, 10) : 1200,
+    maxResolution: elements.settingMaxResolution ? parseInt(elements.settingMaxResolution.value, 10) : 1648,
     imageQuality: elements.settingImageQuality ? parseFloat(elements.settingImageQuality.value) : 0.50,
     autoCrop: elements.settingAutoCrop ? elements.settingAutoCrop.checked : true,
-    despeckle: elements.settingDespeckle ? elements.settingDespeckle.checked : true,
+    despeckle: elements.settingDespeckle ? elements.settingDespeckle.checked : false,
     grayscale: elements.settingGrayscale ? elements.settingGrayscale.checked : true,
     cleanPaper: elements.settingCleanPaper ? elements.settingCleanPaper.checked : true,
     sharpenEink: elements.settingSharpenEink ? elements.settingSharpenEink.checked : false,
+    kindleProfileVersion: 3,
     sshHost: elements.settingSshHost.value.trim() || 'kindle.local',
     sshPort: parseInt(elements.settingSshPort.value, 10) || 2222,
     sshUser: elements.settingSshUser.value.trim() || 'root',

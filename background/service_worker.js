@@ -1697,17 +1697,19 @@ function despeckleGrayscale(data, w, h) {
  * Optimize page image for Kindle E-Ink display:
  * - Auto-crops empty scanner borders to enlarge panels and text
  * - Despeckles scanner CCD noise and halftone moiré patterns (cuts size by 40-50%)
- * - Scales down to Kindle resolution (default 1200px Extra Compact, 254 PPI)
- * - Converts to 8-bit Grayscale matching E-Ink 16 shades
- * - Compresses with high-efficiency WebP/JPEG (~45-65 KB per page)
+ * - Native 1:1 pixel fit for Kindle Paperwhite 11 screen (1236x1648 portrait, 1648x1236 landscape)
+ * - Auto-crops empty scanner margins to enlarge dialogue text & panels on screen
+ * - Converts to 8-bit Grayscale matching Kindle 16 shades
+ * - Pure paper white thresholding (>= 235 -> 255, <= 20 -> 0) to eliminate E-ink ghosting and minimize WebP size
+ * - Preserves 100% native artist linework and razor-sharp font clarity (no median softening filter)
  */
 async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
-  const maxResolution = options.maxResolution !== undefined ? parseInt(options.maxResolution, 10) : 1200;
+  const maxResolution = options.maxResolution !== undefined ? parseInt(options.maxResolution, 10) : 1648;
   const autoCrop = options.autoCrop !== false;
-  const despeckle = options.despeckle !== false;
+  const despeckle = Boolean(options.despeckle); // Strictly false by default to guarantee 100% razor-sharp line art and text
   const isGrayscale = options.grayscale !== false;
   const cleanPaper = options.cleanPaper !== false;
-  const sharpenEink = Boolean(options.sharpenEink); // Off by default to prevent grain bloat
+  const sharpenEink = Boolean(options.sharpenEink); // False by default
   const targetFormat = options.optimizedFormat === 'jpeg' ? 'jpeg' : 'webp';
   const outMime = targetFormat === 'jpeg' ? 'image/jpeg' : 'image/webp';
   const outExt = targetFormat === 'jpeg' ? 'jpg' : 'webp';
@@ -1747,17 +1749,33 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
     let targetWidth = srcW;
     let targetHeight = srcH;
 
-    // Scale down proportionally if larger than maxResolution
+    // Scale down proportionally to match Kindle screen geometry (1:1 physical pixel mapping)
     if (maxResolution > 0) {
-      if (targetHeight > maxResolution && targetHeight >= targetWidth) {
-        // Standard vertical page
-        const scale = maxResolution / targetHeight;
-        targetHeight = maxResolution;
+      let boxW = 1236;
+      let boxH = 1648;
+      if (maxResolution === 1448) {
+        boxW = 1072;
+        boxH = 1448;
+      } else if (maxResolution === 1680) {
+        boxW = 1264;
+        boxH = 1680;
+      } else if (maxResolution === 1200) {
+        boxW = 900;
+        boxH = 1200;
+      } else if (maxResolution !== 1648) {
+        boxH = maxResolution;
+        boxW = Math.round(maxResolution * (1236 / 1648));
+      }
+
+      // Check orientation: standard vertical page vs double-page landscape spread
+      const isLandscape = srcW > srcH;
+      const boundW = isLandscape ? boxH : boxW;
+      const boundH = isLandscape ? boxW : boxH;
+
+      // Fit inside device bounds. Never upscale (scale <= 1.0) to avoid interpolation blur and size bloat.
+      const scale = Math.min(1.0, Math.min(boundW / srcW, boundH / srcH));
+      if (scale < 1.0) {
         targetWidth = Math.round(srcW * scale);
-      } else if (targetWidth > maxResolution && targetWidth > targetHeight) {
-        // Double-page spread
-        const scale = maxResolution / targetWidth;
-        targetWidth = maxResolution;
         targetHeight = Math.round(srcH * scale);
       }
     }
@@ -1767,6 +1785,9 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
     if (!ctx) {
       return { buffer: arrayBuffer, mime, ext: null };
     }
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
 
     if (isGrayscale) {
       try {
@@ -1789,6 +1810,7 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
           // Smart paper white clipping & deep black cleanup:
           // Removes scanner paper noise (>= 235 -> 255) and solidifies deep ink (<= 20 -> 0).
           // Dramatically reduces WebP compression file size and avoids E-Ink dithering/ghosting.
+          // Mid-tones and fine line art (21..234) remain 100% pristine and razor sharp.
           for (let i = 0; i < len; i += 4) {
             let luma = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
             if (luma >= 235) {
@@ -1809,15 +1831,13 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
           }
         }
 
-        // Fast Despeckle pass: remove print halftone moiré and scanner CCD sensor noise
-        // This cuts file size by 40-50% on dark, textured manga like Tokyo Ghoul
+        // Only run despeckle if explicitly requested in options (off by default to prevent font/line softening)
         if (despeckle && targetWidth > 2 && targetHeight > 2) {
           despeckleGrayscale(data, targetWidth, targetHeight);
         }
 
         if (sharpenEink && targetWidth > 2 && targetHeight > 2) {
           // Fast unsharp mask: crisps dialogue text, kanji and fine manga lines on E-Ink
-          // Uses threshold diff >= 4 to sharpen real line art without bloating screentone gradients
           const alpha = 0.22;
           const copy = new Uint8Array(len / 4);
           for (let i = 0, p = 0; i < len; i += 4, p++) {

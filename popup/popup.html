@@ -250,7 +250,7 @@
           </span>
 
           <details id="optimization-options" class="optimization-details">
-            <summary class="details-summary">⚙️ Advanced Image Settings (Resolution, Quality, Filters)</summary>
+            <summary class="details-summary">⚙️ Kindle Image Settings (Resolution, Quality, Crop)</summary>
             <div class="details-content">
               <div class="form-field">
                 <label for="setting-optimized-format">Optimized Format</label>
@@ -261,11 +261,12 @@
               </div>
 
               <div class="form-field">
-                <label for="setting-max-resolution">Max Height / Resolution</label>
+                <label for="setting-max-resolution">Kindle Screen Resolution</label>
                 <select id="setting-max-resolution" class="input-select">
-                  <option value="1200" selected>1200px (Recommended: Extra Compact, ~1.5–2 MB/ch)</option>
-                  <option value="1448">1448px (Paperwhite & Basic 1448px, ~2.5–3 MB/ch)</option>
-                  <option value="1680">1680px (Kindle Oasis / Large Screen)</option>
+                  <option value="1648" selected>1236×1648 (Kindle Paperwhite 11 / Signature — 1:1 Native Sharpness)</option>
+                  <option value="1448">1072×1448 (Paperwhite 3–4, Basic 10/11)</option>
+                  <option value="1680">1264×1680 (Kindle Oasis 2/3)</option>
+                  <option value="1200">900×1200 (Extra Compact, ~1.5 MB/ch)</option>
                   <option value="0">Original (No Resizing)</option>
                 </select>
               </div>
@@ -274,35 +275,25 @@
                 <label for="setting-image-quality">Compression Quality</label>
                 <select id="setting-image-quality" class="input-select">
                   <option value="0.50" selected>Compact 50% (Recommended for E-Ink, best compression)</option>
-                  <option value="0.60">Balanced 60% (~1.5–2.5 MB/ch)</option>
-                  <option value="0.70">High Quality 70% (~2.5–3.5 MB/ch)</option>
-                  <option value="0.80">Ultra Quality 80% (~4–5 MB/ch)</option>
+                  <option value="0.60">Balanced 60% (~2.5 MB/ch)</option>
+                  <option value="0.70">High Quality 70% (~3.5 MB/ch)</option>
+                  <option value="0.80">Ultra Quality 80% (~4.5 MB/ch)</option>
                 </select>
               </div>
 
               <label class="form-checkbox-field" for="setting-auto-crop">
                 <input type="checkbox" id="setting-auto-crop" checked>
-                <span><b>Auto-crop white scan borders</b> (Enlarges art & text on screen, saves ~20% size)</span>
-              </label>
-
-              <label class="form-checkbox-field" for="setting-despeckle">
-                <input type="checkbox" id="setting-despeckle" checked>
-                <span><b>Despeckle scan grain & print moiré</b> (Cuts size by 40–50% on dark manga like Tokyo Ghoul)</span>
+                <span><b>Auto-crop white scan borders</b> (Enlarges art & dialogue text on Kindle screen, saves ~20% size)</span>
               </label>
 
               <label class="form-checkbox-field" for="setting-grayscale">
                 <input type="checkbox" id="setting-grayscale" checked>
-                <span>Convert to 8-bit Grayscale (matches Kindle 16 shades)</span>
+                <span><b>Convert to 8-bit Grayscale</b> (matches Kindle 16 shades, removes color noise)</span>
               </label>
 
               <label class="form-checkbox-field" for="setting-clean-paper">
                 <input type="checkbox" id="setting-clean-paper" checked>
-                <span>Clean paper margins & scanner noise (pure white & solid black)</span>
-              </label>
-
-              <label class="form-checkbox-field" for="setting-sharpen-eink">
-                <input type="checkbox" id="setting-sharpen-eink">
-                <span>E-Ink Micro-sharpening (optional; uncheck to keep file size minimal)</span>
+                <span><b>Pure paper white background</b> (eliminates E-Ink background dithering, optimizes WebP size)</span>
               </label>
             </div>
           </details>
