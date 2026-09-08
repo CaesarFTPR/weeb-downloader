@@ -134,6 +134,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'SET_KINDLE_KEEP_AWAKE') {
+    sendNativeMessage({
+      action: 'set_kindle_keep_awake',
+      enable: request.enable !== false,
+      host: request.host,
+      port: request.port,
+      user: request.user,
+      password: request.password,
+      key_path: request.keyPath
+    })
+      .then(res => sendResponse({ success: true, result: res }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (request.action === 'LIST_LOCAL_FILES') {
     sendNativeMessage({
       action: 'list_files',
@@ -396,6 +411,23 @@ async function handleStartDownloadPipeline(payload) {
 
   // Run pipeline in background
   (async () => {
+    const saveToKindle = Boolean(settings.saveToKindle !== false);
+
+    // Keep Kindle awake during background download and sync session
+    if (saveToKindle) {
+      sendNativeMessage({
+        action: 'set_kindle_keep_awake',
+        enable: true,
+        host: settings.sshHost || 'kindle.local',
+        port: settings.sshPort || 2222,
+        user: settings.sshUser || 'root',
+        password: settings.sshPassword,
+        key_path: settings.sshKeyPath
+      }).catch(err => {
+        console.warn('[WeebDownloader] Initial Kindle keep-awake ping note:', err);
+      });
+    }
+
     try {
       if ((packageMode === 'cumulative_tome' || packageMode === 'single_volume') && (format === 'cbz' || format === 'zip')) {
         await downloadCumulativeTome(tabId, chapters, downloadPaths, format, manga, settings, transferQueue);
@@ -472,6 +504,24 @@ async function handleStartDownloadPipeline(payload) {
       downloadState.error = err.message;
       updateAndBroadcastProgress(`Download failed: ${err.message}`, downloadState.percent, { error: err.message });
     } finally {
+      // Restore normal Kindle power management so device can sleep when idle
+      if (saveToKindle) {
+        try {
+          await sendNativeMessage({
+            action: 'set_kindle_keep_awake',
+            enable: false,
+            host: settings.sshHost || 'kindle.local',
+            port: settings.sshPort || 2222,
+            user: settings.sshUser || 'root',
+            password: settings.sshPassword,
+            key_path: settings.sshKeyPath
+          });
+          console.log('[WeebDownloader] Restored Kindle power management (sleep allowed)');
+        } catch (err) {
+          console.warn('[WeebDownloader] Failed to restore Kindle sleep in finally:', err);
+        }
+      }
+
       if (downloadPaths && downloadPaths.needsRelocation) {
         try {
           await sendNativeMessage({ action: 'cleanup_empty_dir', path: '~/Downloads/_weeb_staging' });

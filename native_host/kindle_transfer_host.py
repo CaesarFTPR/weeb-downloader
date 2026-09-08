@@ -193,6 +193,42 @@ def test_ssh(host, port, user, password=None, key_path=None):
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 
+def set_kindle_keep_awake(host, port, user, enable=True, password=None, key_path=None):
+    """
+    Prevent or restore Kindle sleep/screensaver during downloads.
+    When enable=True, tells Kindle powerd to prevent sleep and screensaver.
+    When enable=False, restores normal power management so Kindle can sleep normally.
+    """
+    ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+    if enable:
+        cmd_str = (
+            "lipc-set-prop -i com.lab126.powerd preventScreenSaver 1 2>/dev/null; "
+            "lipc-set-prop -i com.lab126.powerd deferScreenSaver 1 2>/dev/null; "
+            "powerd_test -p 2>/dev/null || true"
+        )
+    else:
+        cmd_str = (
+            "lipc-set-prop -i com.lab126.powerd preventScreenSaver 0 2>/dev/null; "
+            "lipc-set-prop -i com.lab126.powerd deferScreenSaver 1 2>/dev/null; "
+            "powerd_test -u 2>/dev/null || true"
+        )
+
+    cmd = [
+        ssh_bin,
+        '-o', 'ConnectTimeout=4',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-p', str(port),
+        f'{user}@{host}',
+        cmd_str
+    ]
+    try:
+        res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=6)
+        log_debug(f"set_kindle_keep_awake(enable={enable}): returncode={res.returncode if res else 'None'}")
+        return {'status': 'success', 'enabled': enable}
+    except Exception as e:
+        log_debug(f"set_kindle_keep_awake error: {e}")
+        return {'status': 'error', 'message': str(e)}
+
 def get_remote_files(host, port, user, remote_folder, password=None, key_path=None):
     """Query list of files already present on Kindle in remote_folder without creating directories."""
     clean_folder = remote_folder.rstrip('/')
@@ -368,7 +404,7 @@ end tell
             '-o', 'StrictHostKeyChecking=accept-new',
             '-p', str(port),
             f'{user}@{host}',
-            f"mkdir -p '{remote_folder}' && rmdir '{remote_dest_item}' 2>/dev/null || true; if [ -d '{unwanted_subfolder}' ]; then rm -rf '{unwanted_subfolder}' 2>/dev/null || true; fi"
+            f"mkdir -p '{remote_folder}' && rmdir '{remote_dest_item}' 2>/dev/null || true; if [ -d '{unwanted_subfolder}' ]; then rm -rf '{unwanted_subfolder}' 2>/dev/null || true; fi; lipc-set-prop -i com.lab126.powerd preventScreenSaver 1 2>/dev/null || true; lipc-set-prop -i com.lab126.powerd deferScreenSaver 1 2>/dev/null || true;"
         ]
         execute_with_auth(cleanup_cmd, password=password, key_path=key_path, timeout=12)
 
@@ -430,7 +466,7 @@ end tell
             '-o', 'StrictHostKeyChecking=accept-new',
             '-p', str(port),
             f'{user}@{host}',
-            f"mkdir -p '{remote_target_folder}' && rmdir '{remote_target_folder}'/*.cbz '{remote_target_folder}'/*.zip 2>/dev/null || true"
+            f"mkdir -p '{remote_target_folder}' && rmdir '{remote_target_folder}'/*.cbz '{remote_target_folder}'/*.zip 2>/dev/null || true; lipc-set-prop -i com.lab126.powerd preventScreenSaver 1 2>/dev/null || true; lipc-set-prop -i com.lab126.powerd deferScreenSaver 1 2>/dev/null || true;"
         ]
         execute_with_auth(cleanup_cmd, password=password, key_path=key_path, timeout=12)
 
@@ -1668,6 +1704,10 @@ def main():
 
             if action == 'ping':
                 send_message({'status': 'ok', 'version': '1.0.0'})
+            elif action == 'set_kindle_keep_awake':
+                enable = req.get('enable', True)
+                result = set_kindle_keep_awake(host, port, user, enable=enable, password=password, key_path=key_path)
+                send_message(result)
             elif action == 'test_connection':
                 result = test_ssh(host, port, user, password=password, key_path=key_path)
                 send_message(result)
