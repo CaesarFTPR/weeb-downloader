@@ -203,14 +203,12 @@ def set_kindle_keep_awake(host, port, user, enable=True, password=None, key_path
     if enable:
         cmd_str = (
             "lipc-set-prop -i com.lab126.powerd preventScreenSaver 1 2>/dev/null; "
-            "lipc-set-prop -i com.lab126.powerd deferScreenSaver 1 2>/dev/null; "
-            "powerd_test -p 2>/dev/null || true"
+            "lipc-set-prop -i com.lab126.powerd deferScreenSaver 1 2>/dev/null || true"
         )
     else:
         cmd_str = (
             "lipc-set-prop -i com.lab126.powerd preventScreenSaver 0 2>/dev/null; "
-            "lipc-set-prop -i com.lab126.powerd deferScreenSaver 1 2>/dev/null; "
-            "powerd_test -u 2>/dev/null || true"
+            "lipc-set-prop -i com.lab126.powerd deferScreenSaver 1 2>/dev/null || true"
         )
 
     cmd = [
@@ -751,7 +749,7 @@ def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        "if grep -q -- 'version: 3.1.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+        "if grep -q -- 'version: 3.2.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
     ]
     check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
     if not check_res or check_res.returncode != 0:
@@ -865,7 +863,7 @@ def inspect_remote_volume(host, port, user, remote_cbz_path, password=None, key_
 
     cmd = (
         f"if [ -f '{clean_path}' ]; then "
-        f"  export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect '{clean_path}' 2>/dev/null || unzip -l '{clean_path}' 2>/dev/null; "
+        f"  export LD_LIBRARY_PATH=/mnt/us/koreader/libs; nice -n 19 /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect '{clean_path}' 2>/dev/null || unzip -l '{clean_path}' 2>/dev/null; "
         f"else "
         f"  echo '__NOT_FOUND__'; "
         f"fi"
@@ -1053,7 +1051,7 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
             f"  echo \"__VOL__:$VOL\"; "
             f"  if grep -q -- 'merge_volume.lua' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then "
             f"    echo '__INSPECT__'; "
-            f"    export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect \"$VOL\" 2>/dev/null || unzip -l \"$VOL\" 2>/dev/null; "
+            f"    export LD_LIBRARY_PATH=/mnt/us/koreader/libs; nice -n 19 /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect \"$VOL\" 2>/dev/null || unzip -l \"$VOL\" 2>/dev/null; "
             f"  else "
             f"    echo '__NEED_DEPLOY__'; "
             f"  fi; "
@@ -1438,7 +1436,7 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
                 # Execute merge on Kindle with generous timeout
                 merge_cmd = [ssh_bin] + ssh_auth_flags + [
                     f'{user}@{host}',
-                    f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua '{remote_target_path}' '{remote_delta}'"
+                    f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; nice -n 19 /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua '{remote_target_path}' '{remote_delta}'"
                 ]
                 try:
                     merge_res = execute_with_auth(merge_cmd, password=password, key_path=key_path, timeout=180)
@@ -1656,7 +1654,7 @@ def delete_chapters(target='pc', local_folder='', volume_name='', remote_folder=
                     ssh_bin
                 ] + ssh_auth_flags + [
                     f'{user}@{host}',
-                    f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --delete {esc_sh(found_remote_path)} {keys_sh}"
+                    f"export LD_LIBRARY_PATH=/mnt/us/koreader/libs; nice -n 19 /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --delete {esc_sh(found_remote_path)} {keys_sh}"
                 ]
                 res = execute_with_auth(lua_del_cmd, password=password, key_path=key_path, timeout=30)
                 if res and res.returncode == 0:

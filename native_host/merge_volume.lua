@@ -548,6 +548,5 @@ C.fclose(f_target)
 C.fclose(f_delta)
 
 os.remove(delta_zip)
-os.execute("touch '" .. target_cbz:gsub("'", "'\\''") .. "' 2>/dev/null")
 
 io.write(string.format('{"status":"success","action":"merged","entries":%d,"target":%q}\n', total_new_entries, target_cbz))
