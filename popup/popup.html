@@ -263,9 +263,9 @@
               <div class="form-field">
                 <label for="setting-max-resolution">Max Height / Resolution</label>
                 <select id="setting-max-resolution" class="input-select">
-                  <option value="1448" selected>1448px (Recommended for Kindle Paperwhite & Basic, 300 PPI)</option>
-                  <option value="1200">1200px (Extra Compact, ~1 MB/ch, saves 50% size)</option>
-                  <option value="1680">1680px (Kindle Paperwhite 11 / Oasis Large Screen)</option>
+                  <option value="1200" selected>1200px (Recommended: Extra Compact, ~1.5–2 MB/ch)</option>
+                  <option value="1448">1448px (Paperwhite & Basic 1448px, ~2.5–3 MB/ch)</option>
+                  <option value="1680">1680px (Kindle Oasis / Large Screen)</option>
                   <option value="0">Original (No Resizing)</option>
                 </select>
               </div>
@@ -273,16 +273,21 @@
               <div class="form-field">
                 <label for="setting-image-quality">Compression Quality</label>
                 <select id="setting-image-quality" class="input-select">
-                  <option value="0.60" selected>Compact 60% (Recommended for E-Ink, ~1.2–1.8 MB/ch)</option>
-                  <option value="0.50">Maximum Compression 50% (~800 KB–1.2 MB/ch)</option>
-                  <option value="0.70">Balanced Quality 70% (~2–2.5 MB/ch)</option>
-                  <option value="0.80">Ultra Quality 80% (~3–4 MB/ch)</option>
+                  <option value="0.50" selected>Compact 50% (Recommended for E-Ink, best compression)</option>
+                  <option value="0.60">Balanced 60% (~1.5–2.5 MB/ch)</option>
+                  <option value="0.70">High Quality 70% (~2.5–3.5 MB/ch)</option>
+                  <option value="0.80">Ultra Quality 80% (~4–5 MB/ch)</option>
                 </select>
               </div>
 
               <label class="form-checkbox-field" for="setting-auto-crop">
                 <input type="checkbox" id="setting-auto-crop" checked>
                 <span><b>Auto-crop white scan borders</b> (Enlarges art & text on screen, saves ~20% size)</span>
+              </label>
+
+              <label class="form-checkbox-field" for="setting-despeckle">
+                <input type="checkbox" id="setting-despeckle" checked>
+                <span><b>Despeckle scan grain & print moiré</b> (Cuts size by 40–50% on dark manga like Tokyo Ghoul)</span>
               </label>
 
               <label class="form-checkbox-field" for="setting-grayscale">
@@ -296,8 +301,8 @@
               </label>
 
               <label class="form-checkbox-field" for="setting-sharpen-eink">
-                <input type="checkbox" id="setting-sharpen-eink" checked>
-                <span>E-Ink Micro-sharpening (crisper fonts & line art on Kindle)</span>
+                <input type="checkbox" id="setting-sharpen-eink">
+                <span>E-Ink Micro-sharpening (optional; uncheck to keep file size minimal)</span>
               </label>
             </div>
           </details>

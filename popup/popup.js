@@ -6,12 +6,13 @@ const DEFAULT_SETTINGS = {
   folderName: '{title}',
   optimizeKindle: true,
   optimizedFormat: 'webp',
-  maxResolution: 1448,
-  imageQuality: 0.60,
+  maxResolution: 1200,
+  imageQuality: 0.50,
   autoCrop: true,
+  despeckle: true,
   grayscale: true,
   cleanPaper: true,
-  sharpenEink: true,
+  sharpenEink: false,
   filenameTemplate: '{chapter}',
   sshHost: 'kindle.local',
   sshPort: 2222,
@@ -138,6 +139,7 @@ const elements = {
   settingMaxResolution: document.getElementById('setting-max-resolution'),
   settingImageQuality: document.getElementById('setting-image-quality'),
   settingAutoCrop: document.getElementById('setting-auto-crop'),
+  settingDespeckle: document.getElementById('setting-despeckle'),
   settingGrayscale: document.getElementById('setting-grayscale'),
   settingCleanPaper: document.getElementById('setting-clean-paper'),
   settingSharpenEink: document.getElementById('setting-sharpen-eink'),
@@ -1085,6 +1087,25 @@ async function loadSettings() {
     const stored = await chrome.storage.sync.get('weeb_kindle_settings');
     if (stored && stored.weeb_kindle_settings) {
       currentSettings = { ...DEFAULT_SETTINGS, ...stored.weeb_kindle_settings };
+      // Automatic migration: If the user still has old default 1680px/1448px or quality >= 0.60,
+      // migrate to the new ultra-compact settings (1200px, 0.50, despeckle=true, sharpen=false).
+      let migrated = false;
+      if (currentSettings.maxResolution === 1680 || currentSettings.maxResolution === 1448) {
+        currentSettings.maxResolution = 1200;
+        migrated = true;
+      }
+      if (currentSettings.imageQuality === 0.75 || currentSettings.imageQuality === 0.60) {
+        currentSettings.imageQuality = 0.50;
+        migrated = true;
+      }
+      if (currentSettings.despeckle === undefined) {
+        currentSettings.despeckle = true;
+        migrated = true;
+      }
+      if (migrated) {
+        currentSettings.sharpenEink = false;
+        await chrome.storage.sync.set({ weeb_kindle_settings: currentSettings }).catch(() => {});
+      }
     }
   } catch (e) {
     console.warn('Failed to load settings from storage.sync, using defaults', e);
@@ -1116,13 +1137,16 @@ async function loadSettings() {
     elements.settingOptimizedFormat.value = currentSettings.optimizedFormat || 'webp';
   }
   if (elements.settingMaxResolution) {
-    elements.settingMaxResolution.value = String(currentSettings.maxResolution !== undefined ? currentSettings.maxResolution : 1448);
+    elements.settingMaxResolution.value = String(currentSettings.maxResolution !== undefined ? currentSettings.maxResolution : 1200);
   }
   if (elements.settingImageQuality) {
-    elements.settingImageQuality.value = String(currentSettings.imageQuality !== undefined ? currentSettings.imageQuality : 0.60);
+    elements.settingImageQuality.value = String(currentSettings.imageQuality !== undefined ? currentSettings.imageQuality : 0.50);
   }
   if (elements.settingAutoCrop) {
     elements.settingAutoCrop.checked = currentSettings.autoCrop !== false;
+  }
+  if (elements.settingDespeckle) {
+    elements.settingDespeckle.checked = currentSettings.despeckle !== false;
   }
   if (elements.settingFilenameTemplate) {
     elements.settingFilenameTemplate.value = currentSettings.filenameTemplate || '{chapter}';
@@ -1134,7 +1158,7 @@ async function loadSettings() {
     elements.settingCleanPaper.checked = currentSettings.cleanPaper !== false;
   }
   if (elements.settingSharpenEink) {
-    elements.settingSharpenEink.checked = currentSettings.sharpenEink !== false;
+    elements.settingSharpenEink.checked = currentSettings.sharpenEink === true;
   }
 
   updateDestinationPathDisplay();
@@ -1160,12 +1184,13 @@ async function saveSettings() {
     skipExisting: elements.settingSkipExisting ? elements.settingSkipExisting.checked : true,
     optimizeKindle: elements.settingOptimizeKindle ? elements.settingOptimizeKindle.checked : true,
     optimizedFormat: elements.settingOptimizedFormat ? elements.settingOptimizedFormat.value : 'webp',
-    maxResolution: elements.settingMaxResolution ? parseInt(elements.settingMaxResolution.value, 10) : 1448,
-    imageQuality: elements.settingImageQuality ? parseFloat(elements.settingImageQuality.value) : 0.60,
+    maxResolution: elements.settingMaxResolution ? parseInt(elements.settingMaxResolution.value, 10) : 1200,
+    imageQuality: elements.settingImageQuality ? parseFloat(elements.settingImageQuality.value) : 0.50,
     autoCrop: elements.settingAutoCrop ? elements.settingAutoCrop.checked : true,
+    despeckle: elements.settingDespeckle ? elements.settingDespeckle.checked : true,
     grayscale: elements.settingGrayscale ? elements.settingGrayscale.checked : true,
     cleanPaper: elements.settingCleanPaper ? elements.settingCleanPaper.checked : true,
-    sharpenEink: elements.settingSharpenEink ? elements.settingSharpenEink.checked : true,
+    sharpenEink: elements.settingSharpenEink ? elements.settingSharpenEink.checked : false,
     sshHost: elements.settingSshHost.value.trim() || 'kindle.local',
     sshPort: parseInt(elements.settingSshPort.value, 10) || 2222,
     sshUser: elements.settingSshUser.value.trim() || 'root',
