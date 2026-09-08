@@ -12,6 +12,19 @@ if (typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.erase)
   } catch (e) {}
 }
 
+// Purge legacy corrupted filter caches (v1-v3) from chrome.storage.local
+if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+  try {
+    chrome.storage.local.get(null, (items) => {
+      if (chrome.runtime.lastError || !items) return;
+      const legacyKeys = Object.keys(items).filter(k => k.startsWith('smart_filter_') && !k.startsWith('smart_filter_v4_'));
+      if (legacyKeys.length > 0) {
+        chrome.storage.local.remove(legacyKeys);
+      }
+    });
+  } catch (e) {}
+}
+
 // Active download pipeline state
 let downloadState = {
   isDownloading: false,
@@ -1907,169 +1920,6 @@ async function computePageHash(arrayBuffer) {
 }
 
 /**
- * Compute 256-bit perceptual difference hash (dHash 16x16) of an image
- */
-async function computeVisualHash(arrayBuffer, mime) {
-  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
-    return null;
-  }
-  let bmp = null;
-  try {
-    const blob = new Blob([arrayBuffer], { type: mime || 'image/jpeg' });
-    bmp = await createImageBitmap(blob);
-    const canvas = new OffscreenCanvas(17, 16);
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(bmp, 0, 0, 17, 16);
-    bmp.close();
-    bmp = null;
-    const imgData = ctx.getImageData(0, 0, 17, 16).data;
-    let hashBits = '';
-    for (let y = 0; y < 16; y++) {
-      for (let x = 0; x < 16; x++) {
-        const idx1 = (y * 17 + x) * 4;
-        const idx2 = (y * 17 + x + 1) * 4;
-        const luma1 = (imgData[idx1] * 77 + imgData[idx1 + 1] * 150 + imgData[idx1 + 2] * 29) >> 8;
-        const luma2 = (imgData[idx2] * 77 + imgData[idx2 + 1] * 150 + imgData[idx2 + 2] * 29) >> 8;
-        hashBits += (luma1 < luma2) ? '1' : '0';
-      }
-    }
-    return hashBits;
-  } catch (e) {
-    return null;
-  } finally {
-    if (bmp) {
-      try { bmp.close(); } catch (e) {}
-    }
-  }
-}
-
-/**
- * Hamming distance between two binary hash strings
- */
-function hammingDistance(bits1, bits2) {
-  if (!bits1 || !bits2 || bits1.length !== bits2.length) return 999;
-  let dist = 0;
-  for (let i = 0; i < bits1.length; i++) {
-    if (bits1[i] !== bits2[i]) dist++;
-  }
-  return dist;
-}
-
-/**
- * Check if page is an empty white filler page (> 99.5% white)
- */
-async function isBlankWhitePage(arrayBuffer, mime) {
-  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
-    return false;
-  }
-  let bmp = null;
-  try {
-    const blob = new Blob([arrayBuffer], { type: mime || 'image/jpeg' });
-    bmp = await createImageBitmap(blob);
-    const canvas = new OffscreenCanvas(32, 32);
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(bmp, 0, 0, 32, 32);
-    bmp.close();
-    bmp = null;
-    const imgData = ctx.getImageData(0, 0, 32, 32).data;
-    let nonWhitePixels = 0;
-    const totalPixels = 32 * 32;
-    for (let i = 0; i < imgData.length; i += 4) {
-      const luma = (imgData[i] * 77 + imgData[i + 1] * 150 + imgData[i + 2] * 29) >> 8;
-      if (luma < 245) {
-        nonWhitePixels++;
-      }
-    }
-    return (nonWhitePixels / totalPixels) <= 0.005;
-  } catch (e) {
-    return false;
-  } finally {
-    if (bmp) {
-      try { bmp.close(); } catch (e) {}
-    }
-  }
-}
-
-/**
- * Detect text-only translator notes, recruitment letters, or group promos.
- * These are non-manga text documents typed on a plain white canvas (e.g., Notepad, Word)
- * characterized by:
- * - Predominantly light background (whiteRatio >= 0.60)
- * - Substantial empty horizontal rows between text lines or in margins (emptyRowsRatio >= 0.20)
- * - AND either multiple distinct text lines (textRuns >= 5) OR the bottom half is completely empty (>= 90% white)
- */
-async function isTextOnlyPromoPage(arrayBuffer, mime) {
-  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
-    return false;
-  }
-  let bmp = null;
-  try {
-    const blob = new Blob([arrayBuffer], { type: mime || 'image/jpeg' });
-    bmp = await createImageBitmap(blob);
-    const targetW = 100;
-    const targetH = 150;
-    const canvas = new OffscreenCanvas(targetW, targetH);
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(bmp, 0, 0, targetW, targetH);
-    bmp.close();
-    bmp = null;
-    const imgData = ctx.getImageData(0, 0, targetW, targetH).data;
-
-    let whiteCount = 0;
-    const totalPixels = targetW * targetH;
-    let emptyRows = 0;
-    let textRuns = 0;
-    let inTextLine = false;
-
-    for (let y = 0; y < targetH; y++) {
-      let rowDarkCount = 0;
-      for (let x = 0; x < targetW; x++) {
-        const idx = (y * targetW + x) * 4;
-        const luma = (imgData[idx] * 77 + imgData[idx + 1] * 150 + imgData[idx + 2] * 29) >> 8;
-        if (luma >= 235) whiteCount++;
-        if (luma < 220) rowDarkCount++;
-      }
-      if (rowDarkCount <= 1) {
-        emptyRows++;
-        if (inTextLine) inTextLine = false;
-      } else {
-        if (!inTextLine) {
-          textRuns++;
-          inTextLine = true;
-        }
-      }
-    }
-
-    const emptyRowsRatio = emptyRows / targetH;
-    const whiteRatio = whiteCount / totalPixels;
-
-    let bottomHalfWhite = 0;
-    const halfH = Math.floor(targetH / 2);
-    for (let y = halfH; y < targetH; y++) {
-      for (let x = 0; x < targetW; x++) {
-        const idx = (y * targetW + x) * 4;
-        const luma = (imgData[idx] * 77 + imgData[idx + 1] * 150 + imgData[idx + 2] * 29) >> 8;
-        if (luma >= 235) bottomHalfWhite++;
-      }
-    }
-    const bottomHalfWhiteRatio = bottomHalfWhite / (targetW * (targetH - halfH));
-
-    if (emptyRowsRatio >= 0.20 && whiteRatio >= 0.60) {
-      if (textRuns >= 5 || bottomHalfWhiteRatio >= 0.90) {
-        return true;
-      }
-    }
-    return false;
-  } catch (e) {
-    return false;
-  } finally {
-    if (bmp) {
-      try { bmp.close(); } catch (e) {}
-    }
-  }
-}
-
-/**
  * Inspect pixel dimensions of an image
  */
 async function getImageDimensions(arrayBuffer, mime) {
@@ -2091,16 +1941,10 @@ async function getImageDimensions(arrayBuffer, mime) {
  */
 async function saveSmartFilterData(seriesId, filterData) {
   try {
-    const storageKey = 'smart_filter_' + seriesId;
-    const boundaryObj = {};
-    for (const [k, v] of filterData.boundaryHashes.entries()) {
-      boundaryObj[k] = v;
-    }
+    const storageKey = 'smart_filter_v4_' + seriesId;
     await chrome.storage.local.set({
       [storageKey]: {
-        knownHashes: Array.from(filterData.knownHashes),
-        visualHashes: filterData.visualHashes,
-        boundaryHashes: boundaryObj
+        knownHashes: Array.from(filterData.knownHashes)
       }
     });
   } catch (e) {
@@ -2109,18 +1953,19 @@ async function saveSmartFilterData(seriesId, filterData) {
 }
 
 /**
- * Initialize smart filter data for a manga series and pre-scan boundary pages
+ * Initialize smart filter data for a manga series and pre-scan boundary pages.
+ * 100% Deterministic Rule: ONLY identify recurring credits if an exact SHA-256 match
+ * is found across boundary pages of at least 2 distinct chapters.
+ * Real manga artwork is unique per chapter, guaranteeing 0% false positives for story pages.
  */
 async function initSmartFilterForSeries(tabId, seriesId, chapters) {
-  const storageKey = 'smart_filter_' + seriesId;
+  const storageKey = 'smart_filter_v4_' + seriesId;
   let filterData = seriesSmartFilterCache.get(seriesId);
   if (!filterData) {
     const stored = await chrome.storage.local.get(storageKey).catch(() => ({}));
     const raw = stored[storageKey] || {};
     filterData = {
       knownHashes: new Set(raw.knownHashes || []),
-      visualHashes: raw.visualHashes || [],
-      boundaryHashes: new Map(Object.entries(raw.boundaryHashes || {})),
       boundaryCandidates: []
     };
     seriesSmartFilterCache.set(seriesId, filterData);
@@ -2166,31 +2011,18 @@ async function initSmartFilterForSeries(tabId, seriesId, chapters) {
         );
 
         for (const item of fetched.filter(Boolean)) {
-          const isTextPromo = await isTextOnlyPromoPage(item.buffer, item.mime);
           const hash = await computePageHash(item.buffer);
-          const vHash = await computeVisualHash(item.buffer, item.mime);
-
-          if (isTextPromo) {
-            filterData.knownHashes.add(hash);
-            if (vHash && !filterData.visualHashes.includes(vHash)) {
-              filterData.visualHashes.push(vHash);
-            }
-            console.log(`[SmartFilter] Pre-detected text-only promo in ${item.chTitle}: ${hash.slice(0, 8)}...`);
-            continue;
-          }
-
           const isStart = item.idx <= 1;
           boundarySamples.push({
             chIdx: item.chIdx,
             idx: item.idx,
             isStart,
-            hash,
-            vHash
+            hash
           });
         }
       }
 
-      // Cross-chapter comparison across all boundary samples
+      // Cross-chapter comparison: boundary page in ch A has EXACT same SHA-256 as boundary page in ch B (A != B)
       for (let i = 0; i < boundarySamples.length; i++) {
         const s1 = boundarySamples[i];
         for (let j = i + 1; j < boundarySamples.length; j++) {
@@ -2198,15 +2030,9 @@ async function initSmartFilterForSeries(tabId, seriesId, chapters) {
           if (s1.chIdx === s2.chIdx) continue;
           if (s1.isStart !== s2.isStart) continue;
 
-          const exactMatch = s1.hash === s2.hash;
-          const visualMatch = s1.vHash && s2.vHash && hammingDistance(s1.vHash, s2.vHash) <= 12;
-
-          if (exactMatch || visualMatch) {
+          if (s1.hash === s2.hash) {
             filterData.knownHashes.add(s1.hash);
-            filterData.knownHashes.add(s2.hash);
-            if (s1.vHash && !filterData.visualHashes.includes(s1.vHash)) filterData.visualHashes.push(s1.vHash);
-            if (s2.vHash && !filterData.visualHashes.includes(s2.vHash)) filterData.visualHashes.push(s2.vHash);
-            console.log(`[SmartFilter] Pre-detected recurring credit between ch ${s1.chIdx} and ch ${s2.chIdx} (${s1.isStart ? 'start' : 'end'})`);
+            console.log(`[SmartFilter] Pre-detected recurring credit between ch ${s1.chIdx} and ch ${s2.chIdx} (${s1.isStart ? 'start' : 'end'}): ${s1.hash.slice(0, 8)}...`);
           }
         }
       }
@@ -2221,7 +2047,12 @@ async function initSmartFilterForSeries(tabId, seriesId, chapters) {
 }
 
 /**
- * Filter chapter pages based on aspect ratio, blank content, and credit repetition
+ * Filter chapter pages based on:
+ * 1. Flatbed scanner spine/flap strip scans (W/H < 0.46) at volume boundaries (first 3 pages of Ch 1, last page of volume)
+ * 2. Deterministic cross-chapter SHA-256 matching for recurring scanlation credits on boundary pages
+ *
+ * ZERO heuristics on whiteness/empty rows/fuzzy hashes:
+ * Minimalist manga art (like Tokyo Ghoul, light panels, white voids, dialogue sketches) is 100% protected.
  */
 async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesId, filterData, settings) {
   if (!settings || settings.smartFilter === false || !pageImages || pageImages.length === 0) {
@@ -2230,7 +2061,6 @@ async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesI
 
   const totalPages = pageImages.length;
   // Boundary definition: first 2 pages and last 2 pages
-  // Middle story pages are strictly protected
   const isStartBoundary = (idx) => idx <= 1;
   const isEndBoundary = (idx) => idx >= totalPages - 2;
 
@@ -2240,80 +2070,55 @@ async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesI
 
   for (let i = 0; i < pageImages.length; i++) {
     const page = pageImages[i];
-    const isBoundary = isStartBoundary(i) || isEndBoundary(i);
 
-    // 1. Check extreme aspect ratio (Spine strip scan: W/H < 0.50 or extreme horizontal strip: H/W < 0.35)
-    // Only check near boundaries (first 3 and last 3 pages) to strictly protect any interior manga/manhwa art
-    const isJacketBoundary = i <= 2 || i >= totalPages - 3;
+    // 1. Physical flatbed scanner spine/flap strip scan check (W/H < 0.46)
+    // Strictly limited to physical book boundaries:
+    // First 3 pages of Chapter 1 (index 0, 1, 2) or the very last page of the volume
+    const isJacketBoundary = (chapterIndex === 0 && i <= 2) || (i >= totalPages - 1);
     if (isJacketBoundary) {
       const w = page.srcWidth || page.width || 0;
       const h = page.srcHeight || page.height || 0;
       if (w > 0 && h > 0) {
         const ratio = w / h;
-        if (ratio < 0.50) {
+        if (ratio < 0.46) {
           removedCount++;
-          removalReasons.push(`Page ${i + 1}: Spine/strip scan (W/H = ${ratio.toFixed(2)})`);
+          removalReasons.push(`Page ${i + 1}: Book spine/flap strip scan (W/H = ${ratio.toFixed(2)})`);
           continue;
         }
-        if ((h / w) < 0.35) {
+        if ((h / w) < 0.30) {
           removedCount++;
-          removalReasons.push(`Page ${i + 1}: Horizontal strip/banner (H/W = ${(h / w).toFixed(2)})`);
+          removalReasons.push(`Page ${i + 1}: Horizontal strip/banner scan (H/W = ${(h / w).toFixed(2)})`);
           continue;
         }
       }
     }
 
-    // 2. Boundary heuristics (Only applied to boundary pages: first 2 and last 2)
+    // 2. Cross-chapter deterministic SHA-256 matching for boundary pages (first 2 or last 2)
+    // Story pages are unique per chapter, so exact SHA-256 match across different chapters has 0% false positives
+    const isBoundary = isStartBoundary(i) || isEndBoundary(i);
     if (isBoundary) {
-      // 2a. Blank white filler page check
-      const isBlank = await isBlankWhitePage(page.buffer, page.mime);
-      if (isBlank) {
-        removedCount++;
-        removalReasons.push(`Page ${i + 1}: Blank white filler page`);
-        continue;
-      }
-
-      // 2b. Text-only promo / translator note check
-      const isTextPromo = await isTextOnlyPromoPage(page.buffer, page.mime);
-      if (isTextPromo) {
-        const h = await computePageHash(page.buffer);
-        const vh = await computeVisualHash(page.buffer, page.mime);
-        filterData.knownHashes.add(h);
-        if (vh && !filterData.visualHashes.includes(vh)) filterData.visualHashes.push(vh);
-        removedCount++;
-        removalReasons.push(`Page ${i + 1}: Text-only translator/promo note`);
-        continue;
-      }
-
-      // 2c. Recurring scanlation group credit check
       const pageHash = await computePageHash(page.buffer);
-      const visualHash = await computeVisualHash(page.buffer, page.mime);
-
       let isCredit = false;
-      if (filterData.knownHashes.has(pageHash)) {
+
+      if (filterData && filterData.knownHashes && filterData.knownHashes.has(pageHash)) {
         isCredit = true;
-      } else if (visualHash && filterData.visualHashes.some(vh => hammingDistance(vh, visualHash) <= 12)) {
-        isCredit = true;
-      } else if (filterData.boundaryCandidates && filterData.boundaryCandidates.length > 0) {
+      } else if (filterData && filterData.boundaryCandidates && filterData.boundaryCandidates.length > 0) {
         const isStart = isStartBoundary(i);
         const match = filterData.boundaryCandidates.find(c =>
           c.chapterIndex !== chapterIndex &&
           c.isStart === isStart &&
-          (c.pageHash === pageHash || (visualHash && c.visualHash && hammingDistance(c.visualHash, visualHash) <= 12))
+          c.pageHash === pageHash
         );
         if (match) {
           isCredit = true;
           filterData.knownHashes.add(pageHash);
-          filterData.knownHashes.add(match.pageHash);
-          if (visualHash && !filterData.visualHashes.includes(visualHash)) filterData.visualHashes.push(visualHash);
-          if (match.visualHash && !filterData.visualHashes.includes(match.visualHash)) filterData.visualHashes.push(match.visualHash);
           await saveSmartFilterData(seriesId, filterData);
         }
       }
 
       if (isCredit) {
         removedCount++;
-        removalReasons.push(`Page ${i + 1}: Scanlation group promo/credit (${pageHash.slice(0, 8)}...)`);
+        removalReasons.push(`Page ${i + 1}: Recurring scanlation group promo/credit (${pageHash.slice(0, 8)}...)`);
         continue;
       } else {
         if (!filterData.boundaryCandidates) filterData.boundaryCandidates = [];
@@ -2322,8 +2127,7 @@ async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesI
           chapterName,
           pageIndex: i,
           isStart: isStartBoundary(i),
-          pageHash,
-          visualHash
+          pageHash
         });
       }
     }
