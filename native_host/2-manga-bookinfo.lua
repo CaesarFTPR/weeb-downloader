@@ -1,18 +1,19 @@
 --[[--
   KOReader User Patch: Manga Dedicated Book Information Card
-  Version: 2.2.1
+  Version: 2.3.0
   Priority: 2 (Late - loaded after UIManager)
 
   Transforms KOReader's "Book Information" dialog for Manga/CBZ into a clean,
   dedicated Manga Card:
   1. Hides redundant technical filesystem rows and unwanted items:
      Filename, Format, Size, File date, Folder, Language, Rating, Review/Обзор,
-     Notebook file/Файл заметок, Reader/Ридер, Series/Серии.
-  2. Places Description, Associated name(s), and Related series at the very top:
-     - 1. Описание (Synopsis)
-     - 2. Associated name(s) (Альтернативные названия)
-     - 3. Связанные серии (Related series)
-     - followed by Title, Author, Type, Status, Chapters, Year, Translation, Anime, 18+, Genres, Volume, Pages, Cover.
+     Notebook file/Файл заметок, Reader/Ридер, Series/Серии, Volume/Том.
+  2. Elegant ordered Manga Passport:
+     - 1. Название (Title)
+     - 2. Описание (Synopsis)
+     - 3. Associated name(s) (Альтернативные названия)
+     - 4. Связанные серии (Related series)
+     - followed by Author, Type, Status, Chapters, Year, Translation, Anime, 18+, Tags, Pages, Cover.
   3. Automatic Data Healing: Replaces all "Н/Д" / "N/A" / empty entries with actual metadata
      scraped from WeebCentral (stored in custom_metadata.lua, metadata.cbz.lua, or ComicInfo).
   4. Fixes row tap callbacks: tapping any item (including Related series) opens its own TextViewer
@@ -23,10 +24,10 @@
 --]]--
 
 local ok_bi, BookInfo = pcall(require, "apps/filemanager/filemanagerbookinfo")
-if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.2.1" then
+if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.3.0" then
     return
 end
-BookInfo._manga_custom_patched = "2.2.1"
+BookInfo._manga_custom_patched = "2.3.0"
 
 local ok_bl, BookList = pcall(require, "ui/widget/booklist")
 local ok_ds, DocSettings = pcall(require, "docsettings")
@@ -64,18 +65,19 @@ local function is_empty(val)
 end
 
 -- Desired display priority for Manga Card in KOReader:
--- 1. Description, 2. Associated name(s), 3. Related series at the very top
+-- 1. Название, 2. Описание, 3. Associated name(s), 4. Связанные серии
 local priority_map = {
-    ["Описание:"] = 1,
-    ["Description:"] = 1,
-    ["Associated name(s):"] = 2,
-    ["Associated names:"] = 2,
-    ["Альтернативные названия:"] = 2,
-    ["Связанные серии:"] = 3,
-    ["Related series:"] = 3,
-    ["Related Series(s):"] = 3,
-    ["Название:"] = 4,
-    ["Title:"] = 4,
+    ["Название:"] = 1,
+    ["Title:"] = 1,
+    ["Описание:"] = 2,
+    ["Description:"] = 2,
+    ["Associated name(s):"] = 3,
+    ["Associated names:"] = 3,
+    ["Альтернативные названия:"] = 3,
+    ["Другие названия:"] = 3,
+    ["Связанные серии:"] = 4,
+    ["Related series:"] = 4,
+    ["Related Series(s):"] = 4,
     ["Автор(ы):"] = 5,
     ["Author(s):"] = 5,
     ["Тип:"] = 6,
@@ -86,34 +88,37 @@ local priority_map = {
     ["Total chapters:"] = 8,
     ["Глав в томе:"] = 9,
     ["Chapters count:"] = 9,
-    ["Том:"] = 10,
-    ["Год релиза:"] = 11,
-    ["Released:"] = 11,
-    ["Офиц. перевод:"] = 12,
-    ["Official translation:"] = 12,
-    ["Аниме:"] = 13,
-    ["Anime:"] = 13,
-    ["18+ контент:"] = 14,
-    ["Adult content:"] = 14,
-    ["Ключевые слова:"] = 15,
-    ["Keywords:"] = 15,
-    ["Страниц:"] = 16,
-    ["Pages:"] = 16,
-    ["Обложка:"] = 17,
-    ["Cover image:"] = 17,
+    ["Год релиза:"] = 10,
+    ["Released:"] = 10,
+    ["Офиц. перевод:"] = 11,
+    ["Official translation:"] = 11,
+    ["Аниме:"] = 12,
+    ["Anime:"] = 12,
+    ["18+ контент:"] = 13,
+    ["Adult content:"] = 13,
+    ["Тэги:"] = 14,
+    ["Теги:"] = 14,
+    ["Tags:"] = 14,
+    ["Ключевые слова:"] = 14,
+    ["Keywords:"] = 14,
+    ["Страниц:"] = 15,
+    ["Pages:"] = 15,
+    ["Обложка:"] = 16,
+    ["Cover image:"] = 16,
 }
 
 local label_to_prop = {
+    ["Название:"] = "title",
+    ["Title:"] = "title",
     ["Описание:"] = "description",
     ["Description:"] = "description",
     ["Associated name(s):"] = "associated_names",
     ["Associated names:"] = "associated_names",
     ["Альтернативные названия:"] = "associated_names",
+    ["Другие названия:"] = "associated_names",
     ["Связанные серии:"] = "related_series",
     ["Related series:"] = "related_series",
     ["Related Series(s):"] = "related_series",
-    ["Название:"] = "title",
-    ["Title:"] = "title",
     ["Автор(ы):"] = "authors",
     ["Author(s):"] = "authors",
     ["Тип:"] = "manga_type",
@@ -124,9 +129,6 @@ local label_to_prop = {
     ["Total chapters:"] = "total_chapters",
     ["Глав в томе:"] = "chapters_count",
     ["Chapters count:"] = "chapters_count",
-    ["Том:"] = "series_index",
-    ["Индекс серий:"] = "series_index",
-    ["Series index:"] = "series_index",
     ["Год релиза:"] = "released",
     ["Released:"] = "released",
     ["Офиц. перевод:"] = "official_translation",
@@ -135,6 +137,9 @@ local label_to_prop = {
     ["Anime:"] = "anime_adaptation",
     ["18+ контент:"] = "adult_content",
     ["Adult content:"] = "adult_content",
+    ["Тэги:"] = "keywords",
+    ["Теги:"] = "keywords",
+    ["Tags:"] = "keywords",
     ["Ключевые слова:"] = "keywords",
     ["Keywords:"] = "keywords",
     ["Страниц:"] = "pages",
@@ -168,6 +173,10 @@ local ignore_fields = {
     ["Серии:"] = true,
     ["Серия:"] = true,
     ["Series:"] = true,
+    ["Том:"] = true,
+    ["Volume:"] = true,
+    ["Индекс серий:"] = true,
+    ["Series index:"] = true,
     ["Ридер:"] = true,
     ["Reader:"] = true,
     ["Device:"] = true,
@@ -188,6 +197,9 @@ local function should_ignore(clean)
     end
     if (clean:find("Сери", 1, true) or clean:find("Series", 1, true))
        and not clean:find("Связанн", 1, true) and not clean:find("Related", 1, true) then
+        return true
+    end
+    if clean:find("Том", 1, true) or clean:find("Volume", 1, true) or clean:find("Индекс", 1, true) then
         return true
     end
     return false
@@ -357,9 +369,9 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
                     end
 
                     if not is_empty(val) then
-                        if clean:find("Индекс", 1, true) then
-                            clean = "Том:"
-                            pair[1] = "Том:"
+                        if clean:find("Ключевые слова", 1, true) or clean:find("Keywords", 1, true) then
+                            clean = "Тэги:"
+                            pair[1] = "Тэги:"
                         end
                         table.insert(kept, pair)
                         local pkey = label_to_prop[clean]
@@ -370,21 +382,20 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
 
             -- Inject any missing manga fields directly from real_props
             local default_prop_labels = {
+                { key = "title",                label = "Название:" },
                 { key = "description",          label = "Описание:" },
                 { key = "associated_names",     label = "Associated name(s):" },
                 { key = "related_series",       label = "Связанные серии:" },
-                { key = "title",                label = "Название:" },
                 { key = "authors",              label = "Автор(ы):" },
                 { key = "manga_type",           label = "Тип:" },
                 { key = "status",               label = "Статус:" },
                 { key = "total_chapters",       label = "Всего глав:" },
                 { key = "chapters_count",       label = "Глав в томе:" },
-                { key = "series_index",         label = "Том:" },
                 { key = "released",             label = "Год релиза:" },
                 { key = "official_translation", label = "Офиц. перевод:" },
                 { key = "anime_adaptation",     label = "Аниме:" },
                 { key = "adult_content",        label = "18+ контент:" },
-                { key = "keywords",             label = "Ключевые слова:" },
+                { key = "keywords",             label = "Тэги:" },
                 { key = "pages",                label = "Страниц:" },
             }
 
@@ -406,7 +417,7 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
                 table.insert(kept, cover_pair)
             end
 
-            -- Sort by Manga priority map (Description, Associated names, Related series at top)
+            -- Sort by Manga priority map (Title #1, Description #2, Associated names #3, Related series #4)
             table.sort(kept, function(a, b)
                 local pa = priority_map[strip_icon(a[1] or "")] or 90
                 local pb = priority_map[strip_icon(b[1] or "")] or 90
@@ -421,19 +432,27 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
                 if label_clean:find("Обложка", 1, true) or label_clean:find("Cover", 1, true) then
                     -- Preserve original full-screen cover viewer
                 else
+                    local cur_lbl = label_clean
+                    local cur_val = val
                     p.callback = function()
-                        show_text_viewer(label_clean, val)
+                        show_text_viewer(cur_lbl, cur_val)
                     end
                 end
             end
 
             -- Visual section separators:
-            -- Separates top block (Description, Associated names, Related series) from specs, 18+, Cover
+            -- KOReader draws a horizontal divider underneath any row where `p.separator = true`.
+            -- Logical groupings:
+            -- 1) Header & Overview: Название, Описание, Associated names, Связанные серии [divider]
+            -- 2) Publication & Chapters: Автор, Тип, Статус, Главы, Релиз, Перевод, Аниме, 18+ [divider]
+            -- 3) Metadata: Тэги, Страниц [divider]
+            -- 4) Cover Preview [divider]
             for p_idx, p in ipairs(kept) do
                 p.separator = false
                 local c = strip_icon(p[1] or "")
-                if c:find("Название", 1, true) or c:find("Title", 1, true)
+                if c:find("Связанные серии", 1, true) or c:find("Related", 1, true)
                    or c:find("18+", 1, true) or c:find("Adult", 1, true)
+                   or c:find("Страниц", 1, true) or c:find("Pages", 1, true)
                    or c:find("Обложка", 1, true) or c:find("Cover", 1, true) then
                     p.separator = true
                 end

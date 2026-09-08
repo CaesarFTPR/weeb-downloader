@@ -641,6 +641,7 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
       const statusXml = manga.status ? `  <Status>${escapeXml(manga.status)}</Status>\n` : '';
       const offTransXml = manga.officialTranslation ? `  <OfficialTranslation>${escapeXml(manga.officialTranslation)}</OfficialTranslation>\n` : '';
       const animeXml = manga.animeAdaptation ? `  <AnimeAdaptation>${escapeXml(manga.animeAdaptation)}</AnimeAdaptation>\n` : '';
+      const assocXml = manga.associatedNames ? `  <AssociatedNames>${escapeXml(manga.associatedNames)}</AssociatedNames>\n` : '';
       const relatedXml = manga.relatedSeries ? `  <RelatedSeries>${escapeXml(manga.relatedSeries)}</RelatedSeries>\n` : '';
 
       const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
@@ -650,7 +651,7 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
   <Number>${escapeXml(chapter.chapterNumber || String(chIdx + 1))}</Number>
   <Volume>1</Volume>
   <Count>${escapeXml(String(manga.totalChapters || totalChapters || ''))}</Count>
-${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}${statusXml}${offTransXml}${animeXml}${relatedXml}  <PageCount>${pageImages.length}</PageCount>
+${summaryXml}${assocXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}${statusXml}${offTransXml}${animeXml}${relatedXml}  <PageCount>${pageImages.length}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
   <LanguageISO>en</LanguageISO>
   <ScanInformation>WeebCentral Kindle Downloader</ScanInformation>
@@ -1176,6 +1177,7 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
     const statusXml = manga.status ? `  <Status>${escapeXml(manga.status)}</Status>\n` : '';
     const offTransXml = manga.officialTranslation ? `  <OfficialTranslation>${escapeXml(manga.officialTranslation)}</OfficialTranslation>\n` : '';
     const animeXml = manga.animeAdaptation ? `  <AnimeAdaptation>${escapeXml(manga.animeAdaptation)}</AnimeAdaptation>\n` : '';
+    const assocXml = manga.associatedNames ? `  <AssociatedNames>${escapeXml(manga.associatedNames)}</AssociatedNames>\n` : '';
     const relatedXml = manga.relatedSeries ? `  <RelatedSeries>${escapeXml(manga.relatedSeries)}</RelatedSeries>\n` : '';
     const chCountXml = `  <ChaptersCount>${escapeXml(String(totalVolumeChapters))}</ChaptersCount>\n`;
 
@@ -1185,7 +1187,7 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   <Series>${escapeXml(manga.title)}</Series>
   <Volume>${volumeNum}</Volume>
   <Count>${escapeXml(String(manga.totalChapters || totalToDownload || ''))}</Count>
-${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}${statusXml}${offTransXml}${animeXml}${relatedXml}${chCountXml}  <PageCount>${globalPageCounter}</PageCount>
+${summaryXml}${assocXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}${statusXml}${offTransXml}${animeXml}${relatedXml}${chCountXml}  <PageCount>${globalPageCounter}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
   <LanguageISO>en</LanguageISO>
   <ScanInformation>WeebCentral Kindle Downloader</ScanInformation>
@@ -2497,6 +2499,12 @@ async function enrichMangaMetadata(manga) {
           }
           if (names.length > 0) {
             manga.associatedNames = names.join(', ');
+          }
+        }
+        if (!manga.associatedNames) {
+          const singleMatch = html.match(/<strong>Associated Name(?:\(s\))?<\/strong>[\s\S]*?:\s*([^\n<]+)/i);
+          if (singleMatch && singleMatch[1]) {
+            manga.associatedNames = unescapeXml(singleMatch[1]).trim();
           }
         }
       }
