@@ -1985,7 +1985,8 @@ function updateReadingProgressBadge(prog) {
  */
 function updateKindleStorageUI(storage) {
   if (!storage || !storage.free_str) return;
-  const text = `📱 Kindle: ${storage.free_str} free`;
+  const cleanFree = String(storage.free_str).replace(/\s+free$/i, '').trim();
+  const text = `📱 Kindle: ${cleanFree} free`;
 
   const updateBadge = (el) => {
     if (!el) return;
@@ -2409,7 +2410,8 @@ async function testSshConnection() {
         const storage = response.result.storage;
         let storageTxt = '';
         if (storage && storage.free_str) {
-          storageTxt = ` (${storage.free_str} free)`;
+          const cleanFree = String(storage.free_str).replace(/\s+free$/i, '').trim();
+          storageTxt = ` (${cleanFree} free)`;
           updateKindleStorageUI(storage);
           chrome.storage.local.set({ kindle_last_storage: storage }).catch(() => {});
         }

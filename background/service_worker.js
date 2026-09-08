@@ -392,7 +392,7 @@ class StreamingTransferQueue {
  * Main Download Pipeline Execution in Service Worker
  */
 async function handleStartDownloadPipeline(payload) {
-  const { tabId, chapters, format, packageMode, targetFolder, manga, settings } = payload;
+  let { tabId, chapters, format, packageMode, targetFolder, manga, settings } = payload;
 
   downloadState = {
     isDownloading: true,
