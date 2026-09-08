@@ -12,12 +12,12 @@ if (typeof chrome !== 'undefined' && chrome.downloads && chrome.downloads.erase)
   } catch (e) {}
 }
 
-// Purge legacy corrupted filter caches (v1-v3) from chrome.storage.local
+// Purge all legacy filter caches from chrome.storage.local
 if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
   try {
     chrome.storage.local.get(null, (items) => {
       if (chrome.runtime.lastError || !items) return;
-      const legacyKeys = Object.keys(items).filter(k => k.startsWith('smart_filter_') && !k.startsWith('smart_filter_v4_'));
+      const legacyKeys = Object.keys(items).filter(k => k.startsWith('smart_filter_'));
       if (legacyKeys.length > 0) {
         chrome.storage.local.remove(legacyKeys);
       }
@@ -571,15 +571,6 @@ async function handleStartDownloadPipeline(payload) {
 async function downloadIndividualChapters(tabId, chapters, downloadPaths, format, manga, settings, transferQueue) {
   const totalChapters = chapters.length;
 
-  let filterData = null;
-  if (settings && settings.smartFilter !== false) {
-    try {
-      filterData = await initSmartFilterForSeries(tabId, manga.seriesId, chapters);
-    } catch (e) {
-      console.warn('[WeebDownloader] SmartFilter init warning:', e);
-    }
-  }
-
   for (let chIdx = 0; chIdx < totalChapters; chIdx++) {
     if (downloadState.cancelRequested) {
       updateAndBroadcastProgress('Download cancelled by user.', downloadState.percent);
@@ -636,25 +627,6 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
 
     // Smart Page Filter: Remove recurring promo cards, spine scans, blank pages
     let filteredImages = pageImages;
-    if (settings && settings.smartFilter !== false && filterData) {
-      const filterResult = await filterChapterPages(
-        pageImages,
-        chIdx,
-        cleanChapterName,
-        manga.seriesId,
-        filterData,
-        settings
-      );
-      filteredImages = filterResult.filtered;
-      if (filterResult.removedCount > 0) {
-        console.log(`[SmartFilter] Excluded ${filterResult.removedCount} page(s) in ${cleanChapterName}:`, filterResult.reasons);
-        updateAndBroadcastProgress(
-          `[Smart Filter] Excluded ${filterResult.removedCount} junk page(s) in ${cleanChapterName}`,
-          downloadState.percent,
-          { currentChapterIndex: chIdx + 1, currentChapterName: chapter.name }
-        );
-      }
-    }
 
     if (format === 'cbz' || format === 'zip') {
       const zip = new JSZip();
@@ -1073,15 +1045,6 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   const totalToDownload = chaptersToDownload.length;
   let successfulChapters = 0;
 
-  let filterData = null;
-  if (settings && settings.smartFilter !== false) {
-    try {
-      filterData = await initSmartFilterForSeries(tabId, manga.seriesId, chaptersToDownload);
-    } catch (e) {
-      console.warn('[WeebDownloader] SmartFilter init warning:', e);
-    }
-  }
-
   for (let batchStart = 0; batchStart < totalToDownload; batchStart += BATCH_SIZE) {
     if (downloadState.cancelRequested) {
       updateAndBroadcastProgress('Download cancelled by user.', downloadState.percent);
@@ -1163,27 +1126,7 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
 
       if (downloadState.cancelRequested || !pageImages || pageImages.length === 0) continue;
 
-      // Smart Page Filter: Remove recurring promo cards, spine scans, blank pages
-      let filteredImages = pageImages;
-      if (settings && settings.smartFilter !== false && filterData) {
-        const filterResult = await filterChapterPages(
-          pageImages,
-          chIdx,
-          cleanChTitle,
-          manga.seriesId,
-          filterData,
-          settings
-        );
-        filteredImages = filterResult.filtered;
-        if (filterResult.removedCount > 0) {
-          console.log(`[SmartFilter] Excluded ${filterResult.removedCount} page(s) in ${cleanChTitle}:`, filterResult.reasons);
-          updateAndBroadcastProgress(
-            `[Smart Filter] Excluded ${filterResult.removedCount} junk page(s) in ${cleanChTitle}`,
-            downloadState.percent,
-            { currentChapterIndex: chIdx + 1, currentChapterName: chapter.name }
-          );
-        }
-      }
+      const filteredImages = pageImages;
 
       const chapterStartPage = globalPageCounter;
 
@@ -1902,22 +1845,7 @@ function despeckleGrayscale(data, w, h) {
   }
 }
 
-// =============================================================================
-// Smart Page Filter Module
-// Detects and removes recurring scanlation credits, jacket spines, and blank pages.
-// =============================================================================
-
-const seriesSmartFilterCache = new Map();
 const chapterPagesUrlCache = new Map();
-
-/**
- * Compute SHA-256 hex string of an ArrayBuffer
- */
-async function computePageHash(arrayBuffer) {
-  const digest = await crypto.subtle.digest('SHA-256', arrayBuffer);
-  const arr = new Uint8Array(digest);
-  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 /**
  * Inspect pixel dimensions of an image
@@ -1934,214 +1862,6 @@ async function getImageDimensions(arrayBuffer, mime) {
     } catch (e) {}
   }
   return { width: 0, height: 0 };
-}
-
-/**
- * Save Smart Filter data to chrome.storage.local
- */
-async function saveSmartFilterData(seriesId, filterData) {
-  try {
-    const storageKey = 'smart_filter_v4_' + seriesId;
-    await chrome.storage.local.set({
-      [storageKey]: {
-        knownHashes: Array.from(filterData.knownHashes)
-      }
-    });
-  } catch (e) {
-    console.warn('[SmartFilter] Could not persist filter data:', e);
-  }
-}
-
-/**
- * Initialize smart filter data for a manga series and pre-scan boundary pages.
- * 100% Deterministic Rule: ONLY identify recurring credits if an exact SHA-256 match
- * is found across boundary pages of at least 2 distinct chapters.
- * Real manga artwork is unique per chapter, guaranteeing 0% false positives for story pages.
- */
-async function initSmartFilterForSeries(tabId, seriesId, chapters) {
-  const storageKey = 'smart_filter_v4_' + seriesId;
-  let filterData = seriesSmartFilterCache.get(seriesId);
-  if (!filterData) {
-    const stored = await chrome.storage.local.get(storageKey).catch(() => ({}));
-    const raw = stored[storageKey] || {};
-    filterData = {
-      knownHashes: new Set(raw.knownHashes || []),
-      boundaryCandidates: []
-    };
-    seriesSmartFilterCache.set(seriesId, filterData);
-  } else if (!filterData.boundaryCandidates) {
-    filterData.boundaryCandidates = [];
-  }
-
-  let testChapters = chapters ? [...chapters] : [];
-  if (testChapters.length === 1 && filterData.knownHashes.size === 0 && tabId) {
-    try {
-      const listRes = await chrome.tabs.sendMessage(tabId, { action: 'GET_CHAPTER_LIST', seriesId });
-      if (listRes && listRes.success && listRes.data && listRes.data.length >= 2) {
-        const other = listRes.data.find(c => c.url !== testChapters[0].url) || listRes.data[1];
-        if (other) {
-          testChapters.push(other);
-        }
-      }
-    } catch (e) {}
-  }
-
-  // Multi-chapter pre-scan: sample up to 10 chapters to discover recurring credits across the series
-  if (testChapters.length >= 2) {
-    try {
-      const chaptersToScan = testChapters.slice(0, 10);
-      const boundarySamples = [];
-
-      for (let cIdx = 0; cIdx < chaptersToScan.length; cIdx++) {
-        const ch = chaptersToScan[cIdx];
-        const urls = await fetchChapterPages(tabId, ch.url).catch(() => []);
-        if (!urls || urls.length === 0) continue;
-
-        const indices = [0, urls.length - 1];
-        if (urls.length > 2) indices.push(1);
-        if (urls.length > 3) indices.push(urls.length - 2);
-        const uniqueIndices = [...new Set(indices)];
-
-        const fetched = await Promise.all(
-          uniqueIndices.map(idx =>
-            fetchImageBytes(tabId, urls[idx])
-              .then(res => ({ ...res, idx, total: urls.length, chIdx: cIdx, chTitle: ch.name || `Chapter ${cIdx + 1}` }))
-              .catch(() => null)
-          )
-        );
-
-        for (const item of fetched.filter(Boolean)) {
-          const hash = await computePageHash(item.buffer);
-          const isStart = item.idx <= 1;
-          boundarySamples.push({
-            chIdx: item.chIdx,
-            idx: item.idx,
-            isStart,
-            hash
-          });
-        }
-      }
-
-      // Cross-chapter comparison: boundary page in ch A has EXACT same SHA-256 as boundary page in ch B (A != B)
-      for (let i = 0; i < boundarySamples.length; i++) {
-        const s1 = boundarySamples[i];
-        for (let j = i + 1; j < boundarySamples.length; j++) {
-          const s2 = boundarySamples[j];
-          if (s1.chIdx === s2.chIdx) continue;
-          if (s1.isStart !== s2.isStart) continue;
-
-          if (s1.hash === s2.hash) {
-            filterData.knownHashes.add(s1.hash);
-            console.log(`[SmartFilter] Pre-detected recurring credit between ch ${s1.chIdx} and ch ${s2.chIdx} (${s1.isStart ? 'start' : 'end'}): ${s1.hash.slice(0, 8)}...`);
-          }
-        }
-      }
-
-      await saveSmartFilterData(seriesId, filterData);
-    } catch (err) {
-      console.warn('[SmartFilter] Pre-scan exception:', err);
-    }
-  }
-
-  return filterData;
-}
-
-/**
- * Filter chapter pages based on:
- * 1. Flatbed scanner spine/flap strip scans (W/H < 0.46) at volume boundaries (first 3 pages of Ch 1, last page of volume)
- * 2. Deterministic cross-chapter SHA-256 matching for recurring scanlation credits on boundary pages
- *
- * ZERO heuristics on whiteness/empty rows/fuzzy hashes:
- * Minimalist manga art (like Tokyo Ghoul, light panels, white voids, dialogue sketches) is 100% protected.
- */
-async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesId, filterData, settings) {
-  if (!settings || settings.smartFilter === false || !pageImages || pageImages.length === 0) {
-    return { filtered: pageImages, removedCount: 0, reasons: [] };
-  }
-
-  const totalPages = pageImages.length;
-  // Boundary definition: first 2 pages and last 2 pages
-  const isStartBoundary = (idx) => idx <= 1;
-  const isEndBoundary = (idx) => idx >= totalPages - 2;
-
-  const keptPages = [];
-  let removedCount = 0;
-  const removalReasons = [];
-
-  for (let i = 0; i < pageImages.length; i++) {
-    const page = pageImages[i];
-
-    // 1. Physical flatbed scanner spine/flap strip scan check (W/H < 0.46)
-    // Strictly limited to physical book boundaries:
-    // First 3 pages of Chapter 1 (index 0, 1, 2) or the very last page of the volume
-    const isJacketBoundary = (chapterIndex === 0 && i <= 2) || (i >= totalPages - 1);
-    if (isJacketBoundary) {
-      const w = page.srcWidth || page.width || 0;
-      const h = page.srcHeight || page.height || 0;
-      if (w > 0 && h > 0) {
-        const ratio = w / h;
-        if (ratio < 0.46) {
-          removedCount++;
-          removalReasons.push(`Page ${i + 1}: Book spine/flap strip scan (W/H = ${ratio.toFixed(2)})`);
-          continue;
-        }
-        if ((h / w) < 0.30) {
-          removedCount++;
-          removalReasons.push(`Page ${i + 1}: Horizontal strip/banner scan (H/W = ${(h / w).toFixed(2)})`);
-          continue;
-        }
-      }
-    }
-
-    // 2. Cross-chapter deterministic SHA-256 matching for boundary pages (first 2 or last 2)
-    // Story pages are unique per chapter, so exact SHA-256 match across different chapters has 0% false positives
-    const isBoundary = isStartBoundary(i) || isEndBoundary(i);
-    if (isBoundary) {
-      const pageHash = await computePageHash(page.buffer);
-      let isCredit = false;
-
-      if (filterData && filterData.knownHashes && filterData.knownHashes.has(pageHash)) {
-        isCredit = true;
-      } else if (filterData && filterData.boundaryCandidates && filterData.boundaryCandidates.length > 0) {
-        const isStart = isStartBoundary(i);
-        const match = filterData.boundaryCandidates.find(c =>
-          c.chapterIndex !== chapterIndex &&
-          c.isStart === isStart &&
-          c.pageHash === pageHash
-        );
-        if (match) {
-          isCredit = true;
-          filterData.knownHashes.add(pageHash);
-          await saveSmartFilterData(seriesId, filterData);
-        }
-      }
-
-      if (isCredit) {
-        removedCount++;
-        removalReasons.push(`Page ${i + 1}: Recurring scanlation group promo/credit (${pageHash.slice(0, 8)}...)`);
-        continue;
-      } else {
-        if (!filterData.boundaryCandidates) filterData.boundaryCandidates = [];
-        filterData.boundaryCandidates.push({
-          chapterIndex,
-          chapterName,
-          pageIndex: i,
-          isStart: isStartBoundary(i),
-          pageHash
-        });
-      }
-    }
-
-    keptPages.push(page);
-  }
-
-  // Safety guard: if all pages were flagged, retain original pages to prevent empty chapter
-  if (keptPages.length === 0) {
-    console.warn(`[SmartFilter] Safety guard: all pages were flagged in ${chapterName}, keeping original.`);
-    return { filtered: pageImages, removedCount: 0, reasons: [] };
-  }
-
-  return { filtered: keptPages, removedCount, reasons: removalReasons };
 }
 
 /**
