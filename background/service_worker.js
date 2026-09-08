@@ -1714,7 +1714,10 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
   const outMime = targetFormat === 'jpeg' ? 'image/jpeg' : 'image/webp';
   const outExt = targetFormat === 'jpeg' ? 'jpg' : 'webp';
   const defaultQuality = 0.50;
-  const quality = options.imageQuality !== undefined ? parseFloat(options.imageQuality) : defaultQuality;
+  let quality = options.imageQuality !== undefined ? parseFloat(options.imageQuality) : defaultQuality;
+  if (isNaN(quality) || quality <= 0 || quality > 1) {
+    quality = defaultQuality;
+  }
 
   // Gracefully fallback if OffscreenCanvas or createImageBitmap is not supported
   if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
@@ -1808,14 +1811,14 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
         // Fast integer arithmetic: Y = (77*R + 150*G + 29*B) >> 8
         if (cleanPaper) {
           // Smart paper white clipping & deep black cleanup:
-          // Removes scanner paper noise (>= 235 -> 255) and solidifies deep ink (<= 20 -> 0).
+          // Removes scanner paper noise (>= 225 -> 255) and solidifies deep ink (<= 25 -> 0).
           // Dramatically reduces WebP compression file size and avoids E-Ink dithering/ghosting.
-          // Mid-tones and fine line art (21..234) remain 100% pristine and razor sharp.
+          // Mid-tones and fine line art (26..224) remain 100% pristine and razor sharp.
           for (let i = 0; i < len; i += 4) {
             let luma = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
-            if (luma >= 235) {
+            if (luma >= 225) {
               luma = 255;
-            } else if (luma <= 20) {
+            } else if (luma <= 25) {
               luma = 0;
             }
             data[i] = luma;

@@ -1090,11 +1090,11 @@ async function loadSettings() {
       // Automatic migration: Ensure Kindle Paperwhite 11 screen profile (1236x1648, 1:1 native)
       // and disable line-softening filters (despeckle=false, sharpen=false) for 100% font/art clarity.
       let migrated = false;
-      if (currentSettings.kindleProfileVersion !== 3) {
-        currentSettings.maxResolution = 1648;
+      if (currentSettings.kindleProfileVersion !== 3 || isNaN(parseFloat(currentSettings.imageQuality))) {
+        currentSettings.maxResolution = currentSettings.maxResolution || 1648;
         currentSettings.despeckle = false;
         currentSettings.sharpenEink = false;
-        currentSettings.imageQuality = 0.50;
+        currentSettings.imageQuality = (!isNaN(parseFloat(currentSettings.imageQuality)) && currentSettings.imageQuality > 0) ? currentSettings.imageQuality : 0.50;
         currentSettings.kindleProfileVersion = 3;
         migrated = true;
       }
@@ -1135,7 +1135,14 @@ async function loadSettings() {
     elements.settingMaxResolution.value = String(currentSettings.maxResolution !== undefined ? currentSettings.maxResolution : 1648);
   }
   if (elements.settingImageQuality) {
-    elements.settingImageQuality.value = String(currentSettings.imageQuality !== undefined ? currentSettings.imageQuality : 0.50);
+    let qVal = parseFloat(currentSettings.imageQuality);
+    if (isNaN(qVal) || qVal <= 0 || qVal > 1) {
+      qVal = 0.50;
+      currentSettings.imageQuality = 0.50;
+    }
+    const options = Array.from(elements.settingImageQuality.options);
+    const matched = options.find(opt => Math.abs(parseFloat(opt.value) - qVal) < 0.02);
+    elements.settingImageQuality.value = matched ? matched.value : '0.50';
   }
   if (elements.settingAutoCrop) {
     elements.settingAutoCrop.checked = currentSettings.autoCrop !== false;
@@ -1180,7 +1187,7 @@ async function saveSettings() {
     optimizeKindle: elements.settingOptimizeKindle ? elements.settingOptimizeKindle.checked : true,
     optimizedFormat: elements.settingOptimizedFormat ? elements.settingOptimizedFormat.value : 'webp',
     maxResolution: elements.settingMaxResolution ? parseInt(elements.settingMaxResolution.value, 10) : 1648,
-    imageQuality: elements.settingImageQuality ? parseFloat(elements.settingImageQuality.value) : 0.50,
+    imageQuality: elements.settingImageQuality ? (parseFloat(elements.settingImageQuality.value) || 0.50) : 0.50,
     autoCrop: elements.settingAutoCrop ? elements.settingAutoCrop.checked : true,
     despeckle: elements.settingDespeckle ? elements.settingDespeckle.checked : false,
     grayscale: elements.settingGrayscale ? elements.settingGrayscale.checked : true,
