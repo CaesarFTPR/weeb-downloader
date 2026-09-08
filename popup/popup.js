@@ -23,7 +23,8 @@ const DEFAULT_SETTINGS = {
   localDownloads: '~/Downloads',
   saveToPc: true,
   saveToKindle: true,
-  skipExisting: true
+  skipExisting: true,
+  smartFilter: true
 };
 
 const sessionStore = chrome.storage.session || chrome.storage.local;
@@ -137,6 +138,7 @@ const elements = {
   settingFolderName: document.getElementById('setting-folder-name'),
   settingFilenameTemplate: document.getElementById('setting-filename-template'),
   settingSkipExisting: document.getElementById('setting-skip-existing'),
+  settingSmartFilter: document.getElementById('setting-smart-filter'),
   settingOptimizeKindle: document.getElementById('setting-optimize-kindle'),
   optimizationOptions: document.getElementById('optimization-options'),
   settingOptimizedFormat: document.getElementById('setting-optimized-format'),
@@ -1191,6 +1193,9 @@ async function loadSettings() {
   if (elements.settingSkipExisting) {
     elements.settingSkipExisting.checked = currentSettings.skipExisting !== false;
   }
+  if (elements.settingSmartFilter) {
+    elements.settingSmartFilter.checked = currentSettings.smartFilter !== false;
+  }
   if (elements.settingOptimizeKindle) {
     elements.settingOptimizeKindle.checked = currentSettings.optimizeKindle !== false;
     if (elements.optimizationOptions) {
@@ -1253,6 +1258,7 @@ async function saveSettings() {
     folderName: elements.settingFolderName.value.trim() || '{title}',
     filenameTemplate: elements.settingFilenameTemplate ? elements.settingFilenameTemplate.value : '{chapter}',
     skipExisting: elements.settingSkipExisting ? elements.settingSkipExisting.checked : true,
+    smartFilter: elements.settingSmartFilter ? elements.settingSmartFilter.checked : true,
     optimizeKindle: elements.settingOptimizeKindle ? elements.settingOptimizeKindle.checked : true,
     optimizedFormat: elements.settingOptimizedFormat ? elements.settingOptimizedFormat.value : 'webp',
     maxResolution: elements.settingMaxResolution ? parseInt(elements.settingMaxResolution.value, 10) : 1648,

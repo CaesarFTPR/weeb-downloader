@@ -558,6 +558,15 @@ async function handleStartDownloadPipeline(payload) {
 async function downloadIndividualChapters(tabId, chapters, downloadPaths, format, manga, settings, transferQueue) {
   const totalChapters = chapters.length;
 
+  let filterData = null;
+  if (settings && settings.smartFilter !== false) {
+    try {
+      filterData = await initSmartFilterForSeries(tabId, manga.seriesId, chapters);
+    } catch (e) {
+      console.warn('[WeebDownloader] SmartFilter init warning:', e);
+    }
+  }
+
   for (let chIdx = 0; chIdx < totalChapters; chIdx++) {
     if (downloadState.cancelRequested) {
       updateAndBroadcastProgress('Download cancelled by user.', downloadState.percent);
@@ -612,6 +621,28 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
 
     if (downloadState.cancelRequested || !pageImages) break;
 
+    // Smart Page Filter: Remove recurring promo cards, spine scans, blank pages
+    let filteredImages = pageImages;
+    if (settings && settings.smartFilter !== false && filterData) {
+      const filterResult = await filterChapterPages(
+        pageImages,
+        chIdx,
+        cleanChapterName,
+        manga.seriesId,
+        filterData,
+        settings
+      );
+      filteredImages = filterResult.filtered;
+      if (filterResult.removedCount > 0) {
+        console.log(`[SmartFilter] Excluded ${filterResult.removedCount} page(s) in ${cleanChapterName}:`, filterResult.reasons);
+        updateAndBroadcastProgress(
+          `[Smart Filter] Excluded ${filterResult.removedCount} junk page(s) in ${cleanChapterName}`,
+          downloadState.percent,
+          { currentChapterIndex: chIdx + 1, currentChapterName: chapter.name }
+        );
+      }
+    }
+
     if (format === 'cbz' || format === 'zip') {
       const zip = new JSZip();
 
@@ -620,9 +651,9 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
         Math.floor(((chIdx + 0.95) / totalChapters) * 100)
       );
 
-      for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
+      for (let pIdx = 0; pIdx < filteredImages.length; pIdx++) {
         if (downloadState.cancelRequested) break;
-        const page = pageImages[pIdx];
+        const page = filteredImages[pIdx];
         const pageFilename = `${String(pIdx + 1).padStart(3, '0')}.${page.ext}`;
         zip.file(pageFilename, page.buffer);
       }
@@ -662,14 +693,14 @@ ${summaryXml}${assocXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml
       zip.file('ComicInfo.xml', comicInfoXml);
 
       // toc.ncx for KOReader Table of Contents navigation
-      const firstPageFile = `${String(1).padStart(3, '0')}.${pageImages[0]?.ext || 'webp'}`;
+      const firstPageFile = `${String(1).padStart(3, '0')}.${filteredImages[0]?.ext || 'webp'}`;
       const tocNcx = `<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
     <meta name="dtb:uid" content="urn:uuid:${escapeXml(chapter.id || 'chapter')}"/>
     <meta name="dtb:depth" content="1"/>
-    <meta name="dtb:totalPageCount" content="${pageImages.length}"/>
-    <meta name="dtb:maxPageNumber" content="${pageImages.length}"/>
+    <meta name="dtb:totalPageCount" content="${filteredImages.length}"/>
+    <meta name="dtb:maxPageNumber" content="${filteredImages.length}"/>
   </head>
   <docTitle>
     <text>${escapeXml(chapterTitle)}</text>
@@ -764,9 +795,9 @@ ${summaryXml}${assocXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml
       const chromeFolder = downloadPaths.chromeSubfolder;
       let lastSavedPath = null;
 
-      for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
+      for (let pIdx = 0; pIdx < filteredImages.length; pIdx++) {
         if (downloadState.cancelRequested) break;
-        const page = pageImages[pIdx];
+        const page = filteredImages[pIdx];
         const pageFilename = `${String(pIdx + 1).padStart(3, '0')}.${page.ext}`;
         const base64 = arrayBufferToBase64(page.buffer);
         const relDir = chromeFolder ? `${chromeFolder}/${cleanChapterName}` : cleanChapterName;
@@ -1029,6 +1060,15 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   const totalToDownload = chaptersToDownload.length;
   let successfulChapters = 0;
 
+  let filterData = null;
+  if (settings && settings.smartFilter !== false) {
+    try {
+      filterData = await initSmartFilterForSeries(tabId, manga.seriesId, chaptersToDownload);
+    } catch (e) {
+      console.warn('[WeebDownloader] SmartFilter init warning:', e);
+    }
+  }
+
   for (let batchStart = 0; batchStart < totalToDownload; batchStart += BATCH_SIZE) {
     if (downloadState.cancelRequested) {
       updateAndBroadcastProgress('Download cancelled by user.', downloadState.percent);
@@ -1110,15 +1150,37 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
 
       if (downloadState.cancelRequested || !pageImages || pageImages.length === 0) continue;
 
+      // Smart Page Filter: Remove recurring promo cards, spine scans, blank pages
+      let filteredImages = pageImages;
+      if (settings && settings.smartFilter !== false && filterData) {
+        const filterResult = await filterChapterPages(
+          pageImages,
+          chIdx,
+          cleanChTitle,
+          manga.seriesId,
+          filterData,
+          settings
+        );
+        filteredImages = filterResult.filtered;
+        if (filterResult.removedCount > 0) {
+          console.log(`[SmartFilter] Excluded ${filterResult.removedCount} page(s) in ${cleanChTitle}:`, filterResult.reasons);
+          updateAndBroadcastProgress(
+            `[Smart Filter] Excluded ${filterResult.removedCount} junk page(s) in ${cleanChTitle}`,
+            downloadState.percent,
+            { currentChapterIndex: chIdx + 1, currentChapterName: chapter.name }
+          );
+        }
+      }
+
       const chapterStartPage = globalPageCounter;
 
-      for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
-        const page = pageImages[pIdx];
+      for (let pIdx = 0; pIdx < filteredImages.length; pIdx++) {
+        const page = filteredImages[pIdx];
         const pageFilename = `${String(pIdx + 1).padStart(3, '0')}.${page.ext}`;
         const relativeZipPath = `${cleanFolderName}/${pageFilename}`;
         batchDeltaZip.file(relativeZipPath, page.buffer);
       }
-      globalPageCounter += pageImages.length;
+      globalPageCounter += filteredImages.length;
 
       // Register chapter bookmark
       if (!seenBookmarkKeys.has(chapterKey)) {
@@ -1127,7 +1189,7 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
           key: chapterKey,
           title: cleanChTitle,
           startPage: chapterStartPage,
-          filePath: `${cleanFolderName}/001.${pageImages[0]?.ext || 'webp'}`
+          filePath: `${cleanFolderName}/001.${filteredImages[0]?.ext || 'webp'}`
         });
       }
 
@@ -1437,6 +1499,10 @@ async function autoScanArchivesAfterDownload(manga, chaptersList, settings, targ
  * Fetch image URLs for a chapter (tries active tab, falls back to direct fetch)
  */
 async function fetchChapterPages(tabId, chapterUrl) {
+  if (chapterPagesUrlCache && chapterPagesUrlCache.has(chapterUrl)) {
+    return chapterPagesUrlCache.get(chapterUrl);
+  }
+
   if (tabId) {
     try {
       const pagesRes = await chrome.tabs.sendMessage(tabId, {
@@ -1444,6 +1510,7 @@ async function fetchChapterPages(tabId, chapterUrl) {
         chapterUrl
       });
       if (pagesRes && pagesRes.success && Array.isArray(pagesRes.data) && pagesRes.data.length > 0) {
+        if (chapterPagesUrlCache) chapterPagesUrlCache.set(chapterUrl, pagesRes.data);
         return pagesRes.data;
       }
     } catch (e) {
@@ -1497,6 +1564,10 @@ async function fetchChapterPages(tabId, chapterUrl) {
     throw new Error('No page images found for chapter.');
   }
 
+  if (chapterPagesUrlCache) {
+    chapterPagesUrlCache.set(chapterUrl, imageUrls);
+  }
+
   return imageUrls;
 }
 
@@ -1518,17 +1589,35 @@ async function downloadImagesConcurrently(tabId, imageUrls, concurrency = 8, onP
       try {
         let data = await fetchImageBytes(tabId, url);
         let ext = getExtensionFromUrl(url, data.mime);
+        let pageW = 0;
+        let pageH = 0;
+        let srcW = 0;
+        let srcH = 0;
 
         if (optimizeSettings && optimizeSettings.optimizeKindle !== false) {
           const opt = await optimizeImageForKindle(data.buffer, data.mime, optimizeSettings);
           data = { buffer: opt.buffer, mime: opt.mime };
           if (opt.ext) ext = opt.ext;
+          pageW = opt.width;
+          pageH = opt.height;
+          srcW = opt.srcWidth;
+          srcH = opt.srcHeight;
+        } else {
+          const dims = await getImageDimensions(data.buffer, data.mime);
+          pageW = dims.width;
+          pageH = dims.height;
+          srcW = dims.width;
+          srcH = dims.height;
         }
 
         results[index] = {
           buffer: data.buffer,
           mime: data.mime,
-          ext: ext
+          ext: ext,
+          width: pageW,
+          height: pageH,
+          srcWidth: srcW,
+          srcHeight: srcH
         };
       } catch (err) {
         console.warn(`[WeebDownloader] Page ${index + 1} failed after retries:`, err);
@@ -1800,6 +1889,320 @@ function despeckleGrayscale(data, w, h) {
   }
 }
 
+// =============================================================================
+// Smart Page Filter Module
+// Detects and removes recurring scanlation credits, jacket spines, and blank pages.
+// =============================================================================
+
+const seriesSmartFilterCache = new Map();
+const chapterPagesUrlCache = new Map();
+
+/**
+ * Compute SHA-256 hex string of an ArrayBuffer
+ */
+async function computePageHash(arrayBuffer) {
+  const digest = await crypto.subtle.digest('SHA-256', arrayBuffer);
+  const arr = new Uint8Array(digest);
+  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Compute 256-bit perceptual difference hash (dHash 16x16) of an image
+ */
+async function computeVisualHash(arrayBuffer, mime) {
+  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
+    return null;
+  }
+  let bmp = null;
+  try {
+    const blob = new Blob([arrayBuffer], { type: mime || 'image/jpeg' });
+    bmp = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(17, 16);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bmp, 0, 0, 17, 16);
+    bmp.close();
+    bmp = null;
+    const imgData = ctx.getImageData(0, 0, 17, 16).data;
+    let hashBits = '';
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 16; x++) {
+        const idx1 = (y * 17 + x) * 4;
+        const idx2 = (y * 17 + x + 1) * 4;
+        const luma1 = (imgData[idx1] * 77 + imgData[idx1 + 1] * 150 + imgData[idx1 + 2] * 29) >> 8;
+        const luma2 = (imgData[idx2] * 77 + imgData[idx2 + 1] * 150 + imgData[idx2 + 2] * 29) >> 8;
+        hashBits += (luma1 < luma2) ? '1' : '0';
+      }
+    }
+    return hashBits;
+  } catch (e) {
+    return null;
+  } finally {
+    if (bmp) {
+      try { bmp.close(); } catch (e) {}
+    }
+  }
+}
+
+/**
+ * Hamming distance between two binary hash strings
+ */
+function hammingDistance(bits1, bits2) {
+  if (!bits1 || !bits2 || bits1.length !== bits2.length) return 999;
+  let dist = 0;
+  for (let i = 0; i < bits1.length; i++) {
+    if (bits1[i] !== bits2[i]) dist++;
+  }
+  return dist;
+}
+
+/**
+ * Check if page is an empty white filler page (> 99.5% white)
+ */
+async function isBlankWhitePage(arrayBuffer, mime) {
+  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
+    return false;
+  }
+  let bmp = null;
+  try {
+    const blob = new Blob([arrayBuffer], { type: mime || 'image/jpeg' });
+    bmp = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(32, 32);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bmp, 0, 0, 32, 32);
+    bmp.close();
+    bmp = null;
+    const imgData = ctx.getImageData(0, 0, 32, 32).data;
+    let nonWhitePixels = 0;
+    const totalPixels = 32 * 32;
+    for (let i = 0; i < imgData.length; i += 4) {
+      const luma = (imgData[i] * 77 + imgData[i + 1] * 150 + imgData[i + 2] * 29) >> 8;
+      if (luma < 245) {
+        nonWhitePixels++;
+      }
+    }
+    return (nonWhitePixels / totalPixels) <= 0.005;
+  } catch (e) {
+    return false;
+  } finally {
+    if (bmp) {
+      try { bmp.close(); } catch (e) {}
+    }
+  }
+}
+
+/**
+ * Inspect pixel dimensions of an image
+ */
+async function getImageDimensions(arrayBuffer, mime) {
+  if (typeof createImageBitmap !== 'undefined') {
+    try {
+      const blob = new Blob([arrayBuffer], { type: mime || 'image/jpeg' });
+      const bmp = await createImageBitmap(blob);
+      const w = bmp.width;
+      const h = bmp.height;
+      bmp.close();
+      return { width: w, height: h };
+    } catch (e) {}
+  }
+  return { width: 0, height: 0 };
+}
+
+/**
+ * Save Smart Filter data to chrome.storage.local
+ */
+async function saveSmartFilterData(seriesId, filterData) {
+  try {
+    const storageKey = 'smart_filter_' + seriesId;
+    const boundaryObj = {};
+    for (const [k, v] of filterData.boundaryHashes.entries()) {
+      boundaryObj[k] = v;
+    }
+    await chrome.storage.local.set({
+      [storageKey]: {
+        knownHashes: Array.from(filterData.knownHashes),
+        visualHashes: filterData.visualHashes,
+        boundaryHashes: boundaryObj
+      }
+    });
+  } catch (e) {
+    console.warn('[SmartFilter] Could not persist filter data:', e);
+  }
+}
+
+/**
+ * Initialize smart filter data for a manga series and pre-scan boundary pages
+ */
+async function initSmartFilterForSeries(tabId, seriesId, chapters) {
+  const storageKey = 'smart_filter_' + seriesId;
+  let filterData = seriesSmartFilterCache.get(seriesId);
+  if (!filterData) {
+    const stored = await chrome.storage.local.get(storageKey).catch(() => ({}));
+    const raw = stored[storageKey] || {};
+    filterData = {
+      knownHashes: new Set(raw.knownHashes || []),
+      visualHashes: raw.visualHashes || [],
+      boundaryHashes: new Map(Object.entries(raw.boundaryHashes || {}))
+    };
+    seriesSmartFilterCache.set(seriesId, filterData);
+  }
+
+  let testChapters = chapters ? [...chapters] : [];
+  if (testChapters.length === 1 && filterData.knownHashes.size === 0 && tabId) {
+    try {
+      const listRes = await chrome.tabs.sendMessage(tabId, { action: 'GET_CHAPTER_LIST', seriesId });
+      if (listRes && listRes.success && listRes.data && listRes.data.length >= 2) {
+        const other = listRes.data.find(c => c.url !== testChapters[0].url) || listRes.data[1];
+        if (other) {
+          testChapters.push(other);
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (testChapters.length >= 2 && filterData.knownHashes.size < 2) {
+    try {
+      const ch0 = testChapters[0];
+      const ch1 = testChapters[1];
+      const [urls0, urls1] = await Promise.all([
+        fetchChapterPages(tabId, ch0.url).catch(() => []),
+        fetchChapterPages(tabId, ch1.url).catch(() => [])
+      ]);
+
+      if (urls0.length > 0 && urls1.length > 0) {
+        const sampleIndices0 = [0, 1, urls0.length - 1, urls0.length - 2].filter((v, i, a) => v >= 0 && v < urls0.length && a.indexOf(v) === i);
+        const sampleIndices1 = [0, 1, urls1.length - 1, urls1.length - 2].filter((v, i, a) => v >= 0 && v < urls1.length && a.indexOf(v) === i);
+
+        const fetch0 = sampleIndices0.map(idx => fetchImageBytes(tabId, urls0[idx]).then(res => ({ ...res, idx, ch: 0 })).catch(() => null));
+        const fetch1 = sampleIndices1.map(idx => fetchImageBytes(tabId, urls1[idx]).then(res => ({ ...res, idx, ch: 1 })).catch(() => null));
+
+        const [res0, res1] = await Promise.all([Promise.all(fetch0), Promise.all(fetch1)]);
+        const items0 = res0.filter(Boolean);
+        const items1 = res1.filter(Boolean);
+
+        for (const it0 of items0) {
+          const h0 = await computePageHash(it0.buffer);
+          const v0 = await computeVisualHash(it0.buffer, it0.mime);
+
+          for (const it1 of items1) {
+            const isStart0 = it0.idx <= 1;
+            const isStart1 = it1.idx <= 1;
+            const isEnd0 = it0.idx >= urls0.length - 2;
+            const isEnd1 = it1.idx >= urls1.length - 2;
+
+            if ((isStart0 && isStart1) || (isEnd0 && isEnd1)) {
+              const h1 = await computePageHash(it1.buffer);
+              const v1 = await computeVisualHash(it1.buffer, it1.mime);
+
+              if (h0 === h1 || (v0 && v1 && hammingDistance(v0, v1) <= 10)) {
+                filterData.knownHashes.add(h0);
+                filterData.knownHashes.add(h1);
+                if (v0 && !filterData.visualHashes.includes(v0)) filterData.visualHashes.push(v0);
+                if (v1 && !filterData.visualHashes.includes(v1)) filterData.visualHashes.push(v1);
+                console.log(`[SmartFilter] Pre-detected recurring credit: ${h0.slice(0, 8)}... (${isStart0 ? 'start' : 'end'})`);
+              }
+            }
+          }
+        }
+        await saveSmartFilterData(seriesId, filterData);
+      }
+    } catch (err) {
+      console.warn('[SmartFilter] Pre-scan exception:', err);
+    }
+  }
+
+  return filterData;
+}
+
+/**
+ * Filter chapter pages based on aspect ratio, blank content, and credit repetition
+ */
+async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesId, filterData, settings) {
+  if (!settings || settings.smartFilter === false || !pageImages || pageImages.length === 0) {
+    return { filtered: pageImages, removedCount: 0, reasons: [] };
+  }
+
+  const totalPages = pageImages.length;
+  // Boundary definition: first 2 pages and last 2 pages
+  // Middle story pages are strictly protected
+  const isStartBoundary = (idx) => idx <= 1;
+  const isEndBoundary = (idx) => idx >= totalPages - 2;
+
+  const keptPages = [];
+  let removedCount = 0;
+  const removalReasons = [];
+
+  for (let i = 0; i < pageImages.length; i++) {
+    const page = pageImages[i];
+    const isBoundary = isStartBoundary(i) || isEndBoundary(i);
+
+    // 1. Check extreme aspect ratio (Spine strip scan: W/H < 0.50 or extreme horizontal strip: H/W < 0.35)
+    const w = page.srcWidth || page.width || 0;
+    const h = page.srcHeight || page.height || 0;
+    if (w > 0 && h > 0) {
+      const ratio = w / h;
+      if (ratio < 0.50) {
+        removedCount++;
+        removalReasons.push(`Page ${i + 1}: Spine/strip scan (W/H = ${ratio.toFixed(2)})`);
+        continue;
+      }
+      if ((h / w) < 0.35) {
+        removedCount++;
+        removalReasons.push(`Page ${i + 1}: Horizontal strip/banner (H/W = ${(h / w).toFixed(2)})`);
+        continue;
+      }
+    }
+
+    // 2. Boundary heuristics (Only applied to boundary pages: first 2 and last 2)
+    if (isBoundary) {
+      // 2a. Blank white filler page check
+      const isBlank = await isBlankWhitePage(page.buffer, page.mime);
+      if (isBlank) {
+        removedCount++;
+        removalReasons.push(`Page ${i + 1}: Blank white filler page`);
+        continue;
+      }
+
+      // 2b. Recurring scanlation group credit check
+      const pageHash = await computePageHash(page.buffer);
+      const visualHash = await computeVisualHash(page.buffer, page.mime);
+
+      let isCredit = false;
+      if (filterData.knownHashes.has(pageHash)) {
+        isCredit = true;
+      } else if (visualHash && filterData.visualHashes.some(vh => hammingDistance(vh, visualHash) <= 10)) {
+        isCredit = true;
+      } else {
+        const count = (filterData.boundaryHashes.get(pageHash) || 0) + 1;
+        filterData.boundaryHashes.set(pageHash, count);
+        if (count >= 2) {
+          filterData.knownHashes.add(pageHash);
+          if (visualHash && !filterData.visualHashes.includes(visualHash)) {
+            filterData.visualHashes.push(visualHash);
+          }
+          isCredit = true;
+          await saveSmartFilterData(seriesId, filterData);
+        }
+      }
+
+      if (isCredit) {
+        removedCount++;
+        removalReasons.push(`Page ${i + 1}: Scanlation group promo/credit (${pageHash.slice(0, 8)}...)`);
+        continue;
+      }
+    }
+
+    keptPages.push(page);
+  }
+
+  // Safety guard: if all pages were flagged, retain original pages to prevent empty chapter
+  if (keptPages.length === 0) {
+    console.warn(`[SmartFilter] Safety guard: all pages were flagged in ${chapterName}, keeping original.`);
+    return { filtered: pageImages, removedCount: 0, reasons: [] };
+  }
+
+  return { filtered: keptPages, removedCount, reasons: removalReasons };
+}
+
 /**
  * Optimize page image for Kindle E-Ink display:
  * - Auto-crops empty scanner borders to enlarge panels and text
@@ -1828,7 +2231,7 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
 
   // Gracefully fallback if OffscreenCanvas or createImageBitmap is not supported
   if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
-    return { buffer: arrayBuffer, mime, ext: null };
+    return { buffer: arrayBuffer, mime, ext: null, width: 0, height: 0, srcWidth: 0, srcHeight: 0 };
   }
 
   let bitmap = null;
@@ -2000,21 +2403,33 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
       return {
         buffer: arrayBuffer,
         mime: mime,
-        ext: null
+        ext: null,
+        width: targetWidth,
+        height: targetHeight,
+        srcWidth: srcW,
+        srcHeight: srcH
       };
     }
 
     return {
       buffer: outBuffer,
       mime: outBlob.type || outMime,
-      ext: (outBlob.type && outBlob.type.includes('webp')) ? 'webp' : outExt
+      ext: (outBlob.type && outBlob.type.includes('webp')) ? 'webp' : outExt,
+      width: targetWidth,
+      height: targetHeight,
+      srcWidth: srcW,
+      srcHeight: srcH
     };
   } catch (err) {
     console.warn('[WeebDownloader] Image optimization error, keeping original:', err);
     return {
       buffer: arrayBuffer,
       mime: mime,
-      ext: null
+      ext: null,
+      width: 0,
+      height: 0,
+      srcWidth: 0,
+      srcHeight: 0
     };
   } finally {
     if (bitmap) {
