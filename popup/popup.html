@@ -177,39 +177,54 @@
         <section class="settings-group">
           <h3 class="settings-title">📁 Download & Format</h3>
 
-          <div class="form-field">
-            <label for="setting-format">File Format for KOReader</label>
-            <select id="setting-format" class="input-select">
-              <option value="cbz" selected>.CBZ (Recommended for KOReader)</option>
-              <option value="zip">.ZIP (Standard Archive)</option>
-              <option value="images">Folder of Images (JPG/PNG)</option>
-            </select>
-            <span class="field-hint">KOReader provides native page flip, contrast, and right-to-left manga mode for CBZ.</span>
+          <!-- Row 1: File Format & Packaging Mode -->
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="setting-format">File Format for KOReader</label>
+              <div class="field-with-help">
+                <select id="setting-format" class="input-select">
+                  <option value="cbz" selected>.CBZ (Recommended for KOReader)</option>
+                  <option value="zip">.ZIP (Standard Archive)</option>
+                  <option value="images">Folder of Images (JPG/PNG)</option>
+                </select>
+                <button type="button" class="field-help-icon" title="KOReader provides native page flip, contrast, and right-to-left manga mode for CBZ.">?</button>
+              </div>
+            </div>
+
+            <div class="form-field">
+              <label for="setting-package-mode">Packaging Mode</label>
+              <div class="field-with-help">
+                <select id="setting-package-mode" class="input-select">
+                  <option value="cumulative_tome" selected>🌟 Cumulative Manga Tome (Single Book Card with TOC)</option>
+                  <option value="individual">Individual file per chapter (e.g. Chapter 001.cbz)</option>
+                </select>
+                <button type="button" class="field-help-icon" title="Cumulative Tome keeps 1 single book on Kindle with cover & TOC, adding new chapters in seconds without re-sending old chapters!">?</button>
+              </div>
+            </div>
           </div>
 
-          <div class="form-field">
-            <label for="setting-package-mode">Packaging Mode</label>
-            <select id="setting-package-mode" class="input-select">
-              <option value="cumulative_tome" selected>🌟 Cumulative Manga Tome (Single Book Card with TOC)</option>
-              <option value="individual">Individual file per chapter (e.g. Chapter 001.cbz)</option>
-            </select>
-            <span class="field-hint">Cumulative Tome keeps 1 single book on Kindle with cover & TOC, adding new chapters in seconds without re-sending old chapters!</span>
-          </div>
+          <!-- Row 2: Target Subfolder & Chapter File Naming -->
+          <div class="form-row-2">
+            <div class="form-field">
+              <label for="setting-folder-name">Target Subfolder</label>
+              <div class="field-with-help">
+                <input type="text" id="setting-folder-name" class="input-text" placeholder="{title}">
+                <button type="button" class="field-help-icon" title="Subfolder inside base directory. Use {title} for manga name.">?</button>
+              </div>
+            </div>
 
-          <div class="form-field">
-            <label for="setting-folder-name">Target Subfolder</label>
-            <input type="text" id="setting-folder-name" class="input-text" placeholder="{title}">
-            <span class="field-hint">Subfolder inside base directory. Use <code>{title}</code> for manga name.</span>
-          </div>
-          <div class="form-field">
-            <label for="setting-filename-template">Chapter File Naming</label>
-            <select id="setting-filename-template" class="input-select">
-              <option value="{chapter}" selected>{chapter} (e.g. Chapter 281.cbz)</option>
-              <option value="Ch.{number.3}">Ch.{number.3} (e.g. Ch.001, Ch.281 - Zero Padded)</option>
-              <option value="{title} - {chapter}">{title} - {chapter}</option>
-              <option value="{title} - Ch.{number.3}">{title} - Ch.{number.3}</option>
-            </select>
-            <span class="field-hint">Zero-padded numbers ensure perfect sorting order in KOReader.</span>
+            <div class="form-field">
+              <label for="setting-filename-template">Chapter File Naming</label>
+              <div class="field-with-help">
+                <select id="setting-filename-template" class="input-select">
+                  <option value="{chapter}" selected>{chapter} (e.g. Chapter 281.cbz)</option>
+                  <option value="Ch.{number.3}">Ch.{number.3} (e.g. Ch.001, Ch.281 - Zero Padded)</option>
+                  <option value="{title} - {chapter}">{title} - {chapter}</option>
+                  <option value="{title} - Ch.{number.3}">{title} - Ch.{number.3}</option>
+                </select>
+                <button type="button" class="field-help-icon" title="Zero-padded numbers ensure perfect sorting order in KOReader.">?</button>
+              </div>
+            </div>
           </div>
 
           <label class="form-checkbox-field" for="setting-skip-existing">

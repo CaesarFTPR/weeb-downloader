@@ -827,6 +827,12 @@ body {
   width: 100%;
 }
 
+.input-select {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
 .input-text:focus, .input-select:focus {
   border-color: var(--accent-color);
 }
@@ -1283,6 +1289,60 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+/* Form field with helper icon */
+.field-with-help {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.field-with-help .input-select,
+.field-with-help .input-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.field-help-icon {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  max-width: 22px;
+  max-height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: help;
+  padding: 0;
+  margin: 0;
+  line-height: 1;
+  outline: none;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.field-help-icon:hover,
+.field-help-icon:focus-visible {
+  background-color: var(--accent-color);
+  border-color: var(--accent-color);
+  color: #ffffff;
+  transform: scale(1.12);
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.45);
+}
+
+.field-help-icon:active {
+  transform: scale(0.95);
 }
 
 .form-checkbox-field {

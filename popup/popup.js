@@ -397,6 +397,18 @@ function setupEventListeners() {
   elements.btnTestSsh.addEventListener('click', testSshConnection);
   elements.btnSaveSettings.addEventListener('click', saveSettings);
 
+  // Helper tooltip icon click handler for instant toast notice
+  document.querySelectorAll('.field-help-icon').forEach(icon => {
+    icon.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const hint = icon.getAttribute('title');
+      if (hint) {
+        showBanner(`ℹ️ ${hint}`, 'info', 4500);
+      }
+    });
+  });
+
   // Status banner click to dismiss
   if (elements.statusBanner) {
     elements.statusBanner.addEventListener('click', () => {
