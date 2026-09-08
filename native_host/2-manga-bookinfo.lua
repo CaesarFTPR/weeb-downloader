@@ -1,6 +1,6 @@
 --[[--
   KOReader User Patch: Manga Dedicated Book Information Card
-  Version: 2.1.1
+  Version: 2.1.2
   Priority: 2 (Late - loaded after UIManager)
 
   Transforms KOReader's "Book Information" dialog for Manga/CBZ into a clean,
@@ -9,13 +9,14 @@
   2. Places rich WeebCentral metadata right at the top (Title, Author, Type, Status, Chapters, Year, Translation, Anime, 18+, Genres, Volume, Pages, Cover, Synopsis).
   3. Displays everything on a single, elegant screen without multi-page pagination.
   4. Preserves 100% standard KOReader behavior for non-manga books (EPUB, PDF, FB2).
+  5. Bulletproof pcall error isolation to guarantee KOReader never crashes or freezes.
 --]]--
 
 local ok_bi, BookInfo = pcall(require, "apps/filemanager/filemanagerbookinfo")
-if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.1.1" then
+if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.1.2" then
     return
 end
-BookInfo._manga_custom_patched = "2.1.1"
+BookInfo._manga_custom_patched = "2.1.2"
 
 local ok_bl, BookList = pcall(require, "ui/widget/booklist")
 local ok_ds, DocSettings = pcall(require, "docsettings")
@@ -35,7 +36,7 @@ local manga_props_defs = {
     { key = "device_profile",       label = "Ридер:" },
 }
 
-for _, item in ipairs(manga_props_defs) do
+for item_idx, item in ipairs(manga_props_defs) do
     if not BookInfo.prop_text[item.key] then
         table.insert(BookInfo.props, item.key)
         BookInfo.prop_text[item.key] = item.label
@@ -44,13 +45,13 @@ end
 
 local function strip_icon(str)
     if not str then return "" end
-    return str:gsub("^\u{F040}%s*", ""):gsub("^%s+", ""):gsub("%s+$", "")
+    return tostring(str):gsub("^\u{F040}%s*", ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
 local function is_empty(val)
     if val == nil then return true end
     local s = tostring(val):gsub("^%s*(.-)%s*$", "%1")
-    return (s == "" or s == "nil" or s == "Н/Д" or s == "N/A")
+    return (s == "" or s == "nil" or s == "Н/Д" or s == "N/A" or s == "n/a")
 end
 
 -- Desired display priority for Manga Card in KOReader
@@ -166,95 +167,103 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
             return orig_kvp_new(kvp_class, options)
         end
 
-        if not is_manga then
-            -- Non-manga documents (EPUB/PDF): only remove empty custom manga properties
-            local filtered = {}
-            for _, pair in ipairs(options.kv_pairs) do
-                local clean = strip_icon(pair[1] or "")
-                local is_custom = false
-                for _, def in ipairs(manga_props_defs) do
-                    if clean:find(def.label, 1, true) then
-                        is_custom = true
-                        break
+        local ok_transform, transform_err = pcall(function()
+            if not is_manga then
+                -- Non-manga documents (EPUB/PDF): only remove empty custom manga properties
+                local filtered = {}
+                for pair_idx, pair in ipairs(options.kv_pairs) do
+                    local clean = strip_icon(pair[1] or "")
+                    local is_custom = false
+                    for def_idx, def in ipairs(manga_props_defs) do
+                        if clean:find(def.label, 1, true) then
+                            is_custom = true
+                            break
+                        end
+                    end
+                    if not is_custom or not is_empty(pair[2]) then
+                        table.insert(filtered, pair)
                     end
                 end
-                if not is_custom or not is_empty(pair[2]) then
-                    table.insert(filtered, pair)
+                options.kv_pairs = filtered
+                return
+            end
+
+            -- Dedicated Manga Card transformation
+            local kept = {}
+            local title_val = nil
+            local series_pair = nil
+            local series_idx_pair = nil
+            local has_type = false
+
+            for pair_idx, pair in ipairs(options.kv_pairs) do
+                local label = pair[1] or ""
+                local clean = strip_icon(label)
+                local val = pair[2]
+
+                if not ignore_fields[clean] and not is_empty(val) then
+                    if clean == "Название:" or clean == "Title:" or clean:find("Название", 1, true) or clean:find("Title", 1, true) then
+                        title_val = tostring(val)
+                        table.insert(kept, pair)
+                    elseif clean == "Тип:" or clean == "Type:" or clean:find("Тип", 1, true) or clean:find("Type", 1, true) then
+                        has_type = true
+                        table.insert(kept, pair)
+                    elseif clean == "Серии:" or clean == "Series:" or clean:find("Серии", 1, true) or clean:find("Series", 1, true) then
+                        series_pair = pair
+                    elseif clean == "Индекс серий:" or clean == "Series index:" or clean:find("Индекс", 1, true) then
+                        series_idx_pair = pair
+                    else
+                        table.insert(kept, pair)
+                    end
                 end
             end
-            options.kv_pairs = filtered
-            return orig_kvp_new(kvp_class, options)
-        end
 
-        -- Dedicated Manga Card transformation
-        local kept = {}
-        local title_val = nil
-        local series_pair = nil
-        local series_idx_pair = nil
-        local has_type = false
+            -- Default manga type to "Manga" if not specified
+            if not has_type then
+                local def_val = (book_props and book_props.manga_type) or "Manga"
+                table.insert(kept, { "Тип:", def_val })
+            end
 
-        for _, pair in ipairs(options.kv_pairs) do
-            local label = pair[1] or ""
-            local clean = strip_icon(label)
-            local val = pair[2]
+            -- Clean up redundant Series vs Title
+            if series_pair and title_val and tostring(series_pair[2]) ~= title_val then
+                table.insert(kept, series_pair)
+            end
+            if series_idx_pair then
+                local label_str = tostring(series_idx_pair[1] or "")
+                local p_icon = label_str:find("\u{F040}") and "\u{F040} " or ""
+                series_idx_pair[1] = p_icon .. "Том:"
+                table.insert(kept, series_idx_pair)
+            end
 
-            if not ignore_fields[clean] and not is_empty(val) then
-                if clean == "Название:" or clean == "Title:" or clean == _("Title:") then
-                    title_val = tostring(val)
-                    table.insert(kept, pair)
-                elseif clean == "Тип:" or clean == "Type:" then
-                    has_type = true
-                    table.insert(kept, pair)
-                elseif clean == "Серии:" or clean == "Series:" or clean == _("Series:") then
-                    series_pair = pair
-                elseif clean == "Индекс серий:" or clean == "Series index:" or clean == _("Series index:") then
-                    series_idx_pair = pair
-                else
-                    table.insert(kept, pair)
+            -- Sort by Manga priority map
+            table.sort(kept, function(a, b)
+                local pa = priority_map[strip_icon(a[1] or "")] or 90
+                local pb = priority_map[strip_icon(b[1] or "")] or 90
+                return pa < pb
+            end)
+
+            -- Smart visual section separators
+            for p_idx, p in ipairs(kept) do
+                p.separator = false
+                local c = strip_icon(p[1] or "")
+                if c:find("Автор") or c:find("Author")
+                   or c:find("18+") or c:find("Adult")
+                   or c:find("Связанные") or c:find("Related")
+                   or c:find("Обложка") or c:find("Cover") then
+                    p.separator = true
                 end
             end
-        end
 
-        -- Default manga type to "Manga" if not specified
-        if not has_type then
-            local def_val = (book_props and book_props.manga_type) or "Manga"
-            table.insert(kept, { "Тип:", def_val })
-        end
+            options.kv_pairs = kept
 
-        -- Clean up redundant Series vs Title
-        if series_pair and title_val and tostring(series_pair[2]) ~= title_val then
-            table.insert(kept, series_pair)
-        end
-        if series_idx_pair then
-            local p_icon = series_idx_pair[1]:find("\u{F040}") and "\u{F040} " or ""
-            series_idx_pair[1] = p_icon .. "Том:"
-            table.insert(kept, series_idx_pair)
-        end
-
-        -- Sort by Manga priority map
-        table.sort(kept, function(a, b)
-            local pa = priority_map[strip_icon(a[1] or "")] or 90
-            local pb = priority_map[strip_icon(b[1] or "")] or 90
-            return pa < pb
+            -- When items fit within a single screen, disable pagination footer
+            if #kept <= 18 then
+                options.single_page = true
+            end
         end)
 
-        -- Smart visual section separators
-        for _, p in ipairs(kept) do
-            p.separator = false
-            local c = strip_icon(p[1] or "")
-            if c == "Автор(ы):" or c == "Author(s):" or c == _("Author(s):")
-               or c == "18+ контент:" or c == "Adult content:"
-               or c == "Связанные серии:" or c == "Related series:"
-               or c == "Обложка:" or c == "Cover image:" or c == _("Cover image:") then
-                p.separator = true
-            end
-        end
-
-        options.kv_pairs = kept
-
-        -- When items fit within a single screen, disable pagination footer
-        if #kept <= 18 then
-            options.single_page = true
+        if not ok_transform then
+            -- Fall back silently to original unpatched options, guaranteeing KOReader never hangs
+            io.stderr:write("[manga-bookinfo] transform error: " .. tostring(transform_err) .. "\n")
         end
 
         return orig_kvp_new(kvp_class, options)
