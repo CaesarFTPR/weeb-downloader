@@ -1,6 +1,6 @@
 --[[--
   KOReader User Patch: Manga Dedicated Book Information Card
-  Version: 2.1.0
+  Version: 2.1.1
   Priority: 2 (Late - loaded after UIManager)
 
   Transforms KOReader's "Book Information" dialog for Manga/CBZ into a clean,
@@ -11,15 +11,14 @@
   4. Preserves 100% standard KOReader behavior for non-manga books (EPUB, PDF, FB2).
 --]]--
 
-local ok, BookInfo = pcall(require, "apps/filemanager/filemanagerbookinfo")
-if not ok or not BookInfo or BookInfo._manga_custom_patched == "2.1.0" then
+local ok_bi, BookInfo = pcall(require, "apps/filemanager/filemanagerbookinfo")
+if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.1.1" then
     return
 end
-BookInfo._manga_custom_patched = "2.1.0"
+BookInfo._manga_custom_patched = "2.1.1"
 
-local BookList = require("apps/filemanager/filemanagerbooklist")
-local DocSettings = require("docsettings")
-local _ = require("gettext")
+local ok_bl, BookList = pcall(require, "ui/widget/booklist")
+local ok_ds, DocSettings = pcall(require, "docsettings")
 
 -- Custom manga properties and their user-friendly labels
 local manga_props_defs = {
@@ -45,7 +44,7 @@ end
 
 local function strip_icon(str)
     if not str then return "" end
-    return str:gsub("^%s*[\u{F040}%s]+", ""):gsub("^%s*", "")
+    return str:gsub("^\u{F040}%s*", ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
 local function is_empty(val)
@@ -121,20 +120,20 @@ local ignore_fields = {
 local orig_show = BookInfo.show
 BookInfo.show = function(self, doc_settings_or_file, book_props)
     local has_sidecar = type(doc_settings_or_file) == "table"
-    local file = has_sidecar and doc_settings_or_file:readSetting("doc_path") or doc_settings_or_file
+    local file = has_sidecar and doc_settings_or_file.readSetting and doc_settings_or_file:readSetting("doc_path") or doc_settings_or_file
     if not has_sidecar and self.document and self.document.file == file then
-        doc_settings_or_file = self.ui.doc_settings
-        has_sidecar = true
+        doc_settings_or_file = self.ui and self.ui.doc_settings
+        has_sidecar = type(doc_settings_or_file) == "table"
     end
-    if not has_sidecar and BookList.hasBookBeenOpened(file) then
+    if not has_sidecar and file and ok_bl and BookList and BookList.hasBookBeenOpened and BookList.hasBookBeenOpened(file) then
         doc_settings_or_file = BookList.getDocSettings(file)
-        has_sidecar = true
+        has_sidecar = type(doc_settings_or_file) == "table"
     end
 
     local is_manga = false
-    if file and (file:lower():match("%.cbz$") or file:lower():match("%.cbr$") or file:lower():match("%.zip$")) then
+    if file and type(file) == "string" and (file:lower():match("%.cbz$") or file:lower():match("%.cbr$") or file:lower():match("%.zip$")) then
         is_manga = true
-    elseif has_sidecar and doc_settings_or_file:readSetting("inverse_reading_order") == true then
+    elseif has_sidecar and doc_settings_or_file and doc_settings_or_file.readSetting and doc_settings_or_file:readSetting("inverse_reading_order") == true then
         is_manga = true
     elseif book_props and (book_props.manga_type or book_props.total_chapters or book_props.status) then
         is_manga = true
@@ -155,7 +154,11 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
         if not book_props.chapters_count then book_props.chapters_count = desc_text:match("• Глав в томе:%s*(%d+)") end
     end
 
-    local KeyValuePage = require("ui/widget/keyvaluepage")
+    local ok_kvp, KeyValuePage = pcall(require, "ui/widget/keyvaluepage")
+    if not ok_kvp or not KeyValuePage then
+        return orig_show(self, doc_settings_or_file, book_props)
+    end
+
     local orig_kvp_new = KeyValuePage.new
     KeyValuePage.new = function(kvp_class, options)
         KeyValuePage.new = orig_kvp_new

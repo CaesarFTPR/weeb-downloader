@@ -1075,7 +1075,7 @@ def ensure_koreader_manga_patch(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        "if grep -q -- 'Version: 2.1.0' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+        "if grep -q -- 'Version: 2.1.1' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
     ]
     check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
     if not check_res or check_res.returncode != 0:
@@ -1434,7 +1434,7 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
             f"{cleanup_sh}"
             f"if [ -n \"$VOL\" ]; then "
             f"  echo \"__VOL__:$VOL\"; "
-            f"  if grep -q -- 'version: 3.5.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null && grep -q -- 'Version: 2.1.0' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then "
+            f"  if grep -q -- 'version: 3.5.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null && grep -q -- 'Version: 2.1.1' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then "
             f"    echo '__INSPECT__'; "
             f"    export LD_LIBRARY_PATH=/mnt/us/koreader/libs; nice -n 19 /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect \"$VOL\" 2>/dev/null || unzip -l \"$VOL\" 2>/dev/null; "
             f"  else "
