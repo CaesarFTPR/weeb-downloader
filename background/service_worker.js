@@ -2243,19 +2243,23 @@ async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesI
     const isBoundary = isStartBoundary(i) || isEndBoundary(i);
 
     // 1. Check extreme aspect ratio (Spine strip scan: W/H < 0.50 or extreme horizontal strip: H/W < 0.35)
-    const w = page.srcWidth || page.width || 0;
-    const h = page.srcHeight || page.height || 0;
-    if (w > 0 && h > 0) {
-      const ratio = w / h;
-      if (ratio < 0.50) {
-        removedCount++;
-        removalReasons.push(`Page ${i + 1}: Spine/strip scan (W/H = ${ratio.toFixed(2)})`);
-        continue;
-      }
-      if ((h / w) < 0.35) {
-        removedCount++;
-        removalReasons.push(`Page ${i + 1}: Horizontal strip/banner (H/W = ${(h / w).toFixed(2)})`);
-        continue;
+    // Only check near boundaries (first 3 and last 3 pages) to strictly protect any interior manga/manhwa art
+    const isJacketBoundary = i <= 2 || i >= totalPages - 3;
+    if (isJacketBoundary) {
+      const w = page.srcWidth || page.width || 0;
+      const h = page.srcHeight || page.height || 0;
+      if (w > 0 && h > 0) {
+        const ratio = w / h;
+        if (ratio < 0.50) {
+          removedCount++;
+          removalReasons.push(`Page ${i + 1}: Spine/strip scan (W/H = ${ratio.toFixed(2)})`);
+          continue;
+        }
+        if ((h / w) < 0.35) {
+          removedCount++;
+          removalReasons.push(`Page ${i + 1}: Horizontal strip/banner (H/W = ${(h / w).toFixed(2)})`);
+          continue;
+        }
       }
     }
 
