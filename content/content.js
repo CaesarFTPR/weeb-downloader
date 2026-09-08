@@ -103,6 +103,7 @@ async function getMangaInfo() {
       animeAdaptation: '',
       adultContent: '',
       relatedSeries: '',
+      associatedNames: '',
       description: '',
       coverUrl: ''
     };
@@ -172,6 +173,26 @@ async function getMangaInfo() {
         }
         if (relItems.length > 0) {
           details.relatedSeries = relItems.join(', ');
+        }
+      } else if (label.includes('associated name') || label.includes('alternative name')) {
+        const subLis = li.querySelectorAll('li');
+        const names = [];
+        if (subLis.length > 0) {
+          subLis.forEach(sub => {
+            const t = sub.textContent.trim();
+            if (t) names.push(t);
+          });
+        } else {
+          const aList = li.querySelectorAll('a');
+          if (aList.length > 0) {
+            aList.forEach(a => names.push(a.textContent.trim()));
+          } else {
+            const t = li.textContent.replace(strong.textContent, '').trim();
+            if (t) names.push(t);
+          }
+        }
+        if (names.length > 0) {
+          details.associatedNames = names.join(', ');
         }
       } else if (label.includes('description')) {
         const p = li.querySelector('p');
@@ -253,6 +274,7 @@ async function getMangaInfo() {
     animeAdaptation: details.animeAdaptation || '',
     adultContent: details.adultContent || '',
     relatedSeries: details.relatedSeries || '',
+    associatedNames: details.associatedNames || '',
     totalChapters: 0,
     currentUrl: url,
     isSeries,

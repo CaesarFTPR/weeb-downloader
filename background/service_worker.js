@@ -733,8 +733,8 @@ ${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatin
         anime_adaptation: manga.animeAdaptation || '',
         adult_content: manga.adultContent || '',
         related_series: manga.relatedSeries || '',
-        source: 'WeebCentral',
-        device_profile: 'Kindle 11 (1236×1648)'
+        associated_names: manga.associatedNames || '',
+        source: 'WeebCentral'
       };
 
       // If saving locally to PC, ensure local KOReader sidecar is generated with RTL manga order
@@ -1282,8 +1282,8 @@ ${navPointsXml}
           anime_adaptation: manga.animeAdaptation || '',
           adult_content: manga.adultContent || '',
           related_series: manga.relatedSeries || '',
-          source: 'WeebCentral',
-          device_profile: 'Kindle 11 (1236×1648)'
+          associated_names: manga.associatedNames || '',
+          source: 'WeebCentral'
         }
       });
 
@@ -2356,6 +2356,8 @@ function buildMangaPassport(manga, extra = {}) {
   lines.push(`║ ${title.toUpperCase().padEnd(56, ' ')} ║`);
   lines.push(`╚══════════════════════════════════════════════════════════╝`);
 
+  if (manga.associatedNames) lines.push(`• Associated Name(s): ${manga.associatedNames}`);
+  if (manga.relatedSeries) lines.push(`• Связанные серии: ${manga.relatedSeries}`);
   if (manga.author) lines.push(`• Автор(ы): ${manga.author}`);
   if (manga.type) lines.push(`• Тип: ${manga.type}`);
   if (manga.status) lines.push(`• Статус: ${manga.status}`);
@@ -2371,11 +2373,8 @@ function buildMangaPassport(manga, extra = {}) {
   if (manga.officialTranslation) lines.push(`• Официальный перевод: ${manga.officialTranslation}`);
   if (manga.animeAdaptation) lines.push(`• Аниме-адаптация: ${manga.animeAdaptation}`);
   if (manga.adultContent) lines.push(`• 18+ Контент: ${manga.adultContent}`);
-  if (manga.relatedSeries) lines.push(`• Связанные серии: ${manga.relatedSeries}`);
   const tags = manga.tags || manga.genres;
   if (tags) lines.push(`• Теги: ${tags}`);
-  lines.push(`• Источник: WeebCentral`);
-  lines.push(`• Ридер: Kindle 11 (1236×1648, RTL Manga)`);
   lines.push(`──────────────────────────────────────────────────────────`);
   lines.push(`СИНОПСИС:`);
   lines.push(manga.description ? manga.description.trim() : 'Описание отсутствует.');
@@ -2486,9 +2485,25 @@ async function enrichMangaMetadata(manga) {
         }
       }
 
+      // Associated Name(s)
+      if (!manga.associatedNames) {
+        const assocBlockMatch = html.match(/<strong>Associated Name(?:\(s\))?<\/strong>[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/i);
+        if (assocBlockMatch && assocBlockMatch[1]) {
+          const names = [];
+          const itemMatches = [...assocBlockMatch[1].matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+          for (const im of itemMatches) {
+            const cleanText = unescapeXml(im[1].replace(/<[^>]+>/g, '')).trim();
+            if (cleanText) names.push(cleanText);
+          }
+          if (names.length > 0) {
+            manga.associatedNames = names.join(', ');
+          }
+        }
+      }
+
       // Related Series
       if (!manga.relatedSeries) {
-        const relBlockMatch = html.match(/<strong>Related Series<\/strong>[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/i);
+        const relBlockMatch = html.match(/<strong>Related Series(?:\(s\))?<\/strong>[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/i);
         if (relBlockMatch && relBlockMatch[1]) {
           const relItems = [];
           const itemMatches = [...relBlockMatch[1].matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];

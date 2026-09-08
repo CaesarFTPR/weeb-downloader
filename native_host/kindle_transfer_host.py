@@ -369,8 +369,13 @@ def extract_metadata_from_cbz(cbz_path):
                         if not age_rating:
                             m = re.search(r'•\s*18\+\s*Контент:\s*([^\n]+)', summary)
                             if m: age_rating = m.group(1).strip()
+                        assoc = root.findtext('AssociatedNames') or root.findtext('AlternativeNames')
+                        if not assoc:
+                            m = re.search(r'•\s*(?:Associated Name(?:\(s\))?|Альтернативные названия):\s*([^\n]+)', summary)
+                            if m: assoc = m.group(1).strip()
+                        if assoc: meta['associated_names'] = assoc.strip()
                         if not related:
-                            m = re.search(r'•\s*Связанные серии:\s*([^\n]+)', summary)
+                            m = re.search(r'•\s*(?:Связанные серии|Related Series(?:\(s\))?):\s*([^\n]+)', summary)
                             if m: related = m.group(1).strip()
                         if not count:
                             m = re.search(r'•\s*Всего глав:\s*(\d+)', summary) or re.search(r'из\s*(\d+)\s*на сайте', summary)
@@ -450,7 +455,7 @@ def ensure_koreader_sidecar_local(cbz_path, metadata=None):
         for k in ('title', 'series', 'series_index', 'authors', 'description', 'keywords', 'language',
                   'status', 'manga_type', 'chapters_count', 'total_chapters', 'released',
                   'official_translation', 'anime_adaptation', 'adult_content', 'related_series',
-                  'source', 'device_profile'):
+                  'associated_names', 'source', 'device_profile'):
             v = metadata.get(k)
             if v is not None and str(v).strip() != '':
                 extracted[k] = v if isinstance(v, (int, float, bool)) else str(v).strip()
@@ -489,7 +494,8 @@ def ensure_koreader_sidecar_local(cbz_path, metadata=None):
     }
     for k in ('authors', 'description', 'keywords', 'series_index', 'status', 'manga_type',
               'chapters_count', 'total_chapters', 'released', 'official_translation',
-              'anime_adaptation', 'adult_content', 'related_series', 'source', 'device_profile'):
+              'anime_adaptation', 'adult_content', 'related_series', 'associated_names',
+              'source', 'device_profile'):
         if k in extracted and extracted[k]:
             data["doc_props"][k] = extracted[k]
     if extracted.get('pages', 0) > 0:
@@ -1075,7 +1081,7 @@ def ensure_koreader_manga_patch(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        "if grep -q -- 'Version: 2.1.2' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+        "if grep -q -- 'Version: 2.2.0' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
     ]
     check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
     if not check_res or check_res.returncode != 0:
@@ -1434,7 +1440,7 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
             f"{cleanup_sh}"
             f"if [ -n \"$VOL\" ]; then "
             f"  echo \"__VOL__:$VOL\"; "
-            f"  if grep -q -- 'version: 3.5.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null && grep -q -- 'Version: 2.1.2' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then "
+            f"  if grep -q -- 'version: 3.5.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null && grep -q -- 'Version: 2.2.0' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then "
             f"    echo '__INSPECT__'; "
             f"    export LD_LIBRARY_PATH=/mnt/us/koreader/libs; nice -n 19 /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect \"$VOL\" 2>/dev/null || unzip -l \"$VOL\" 2>/dev/null; "
             f"  else "
