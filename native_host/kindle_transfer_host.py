@@ -54,7 +54,7 @@ tell application "Finder"
 end tell
 '''
     try:
-        res = subprocess.run(['osascript', '-e', finder_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+        res = subprocess.run(['osascript', '-e', finder_script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
         raw_tmp = os.path.join('/tmp', base)
         if res.returncode == 0 and os.path.exists(raw_tmp):
             return raw_tmp
@@ -342,7 +342,7 @@ end tell
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=30
+                timeout=120
             )
             if finder_res.returncode == 0 and os.path.exists(tmp_path):
                 source_to_use = tmp_path
@@ -419,7 +419,7 @@ end tell
         cmd = [scp_bin] + auth_flags + [source_to_use, f'{user}@{host}:{clean_remote}']
 
         try:
-            res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=120)
+            res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=300)
             if res.returncode == 0:
                 # Invalidate KOReader page count cache
                 touch_cmd = [
@@ -1284,7 +1284,7 @@ def binary_zip_append_filter(target_path, delta_path):
         f_target.write(new_eocd)
         f_target.truncate()
 
-def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_to_pc=True, save_to_kindle=True, auto_transfer=None, host='kindle.local', port=2222, user='root', password=None, key_path=None):
+def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_to_pc=True, save_to_kindle=True, auto_transfer=None, host='kindle.local', port=2222, user='root', password=None, key_path=None, known_remote_path=None):
     """
     Appends delta_zip into local_target_cbz on PC via instant binary append (O(delta)) if save_to_pc is True.
     Smartly de-duplicates existing chapter copies and avoids duplicating content.
@@ -1296,7 +1296,7 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
         save_to_kindle = auto_transfer
     exp_target = os.path.expanduser(local_target_cbz)
     exp_delta = os.path.expanduser(delta_zip_path)
-    log_debug(f"append_to_volume: target={exp_target}, delta={exp_delta}, save_pc={save_to_pc}, save_kindle={save_to_kindle}")
+    log_debug(f"append_to_volume: target={exp_target}, delta={exp_delta}, save_pc={save_to_pc}, save_kindle={save_to_kindle}, known_remote={known_remote_path}")
 
     if not os.path.exists(exp_delta):
         return {'status': 'error', 'message': f'Delta zip not found: {exp_delta}'}
@@ -1356,15 +1356,17 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
         clean_remote = remote_folder.rstrip('/') if remote_folder else '/mnt/us/koreader'
         filename = os.path.basename(exp_target)
 
-        # Locate existing volume anywhere on Kindle
-        found_remote_path = find_remote_volume(
-            host, port, user,
-            volume_name=filename,
-            remote_folder=clean_remote,
-            remote_base=os.path.dirname(clean_remote) if '/' in clean_remote else clean_remote,
-            password=password,
-            key_path=key_path
-        )
+        # Locate existing volume anywhere on Kindle (using known_remote_path if already discovered)
+        found_remote_path = known_remote_path
+        if not found_remote_path:
+            found_remote_path = find_remote_volume(
+                host, port, user,
+                volume_name=filename,
+                remote_folder=clean_remote,
+                remote_base=os.path.dirname(clean_remote) if '/' in clean_remote else clean_remote,
+                password=password,
+                key_path=key_path
+            )
 
         ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
         scp_bin = shutil.which('scp') or '/usr/bin/scp'
@@ -1406,6 +1408,9 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
 
             try:
                 kindle_result = scp_transfer(host, port, user, file_to_send, dest_dir, password=password, key_path=key_path, force_overwrite=True)
+                if kindle_result and kindle_result.get('status') == 'success':
+                    remote_dest = f"{dest_dir.rstrip('/')}/{filename}"
+                    kindle_result['remote_target_path'] = remote_dest
             finally:
                 if temp_send_file and os.path.exists(temp_send_file):
                     try:
@@ -1421,7 +1426,7 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
             staged_delta = stage_file_to_tmp(exp_delta) or exp_delta
             remote_delta = f'/mnt/us/koreader/cache/delta_{int(time.time())}.zip'
             delta_transfer_cmd = [scp_bin] + auth_flags + [staged_delta, f'{user}@{host}:{remote_delta}']
-            transfer_res = execute_with_auth(delta_transfer_cmd, password=password, key_path=key_path, timeout=60)
+            transfer_res = execute_with_auth(delta_transfer_cmd, password=password, key_path=key_path, timeout=180)
             if staged_delta and staged_delta != exp_delta and os.path.exists(staged_delta):
                 try:
                     os.remove(staged_delta)
@@ -1441,7 +1446,11 @@ def append_to_volume(local_target_cbz, delta_zip_path, remote_folder=None, save_
                     if out_lines:
                         res_json = json.loads(out_lines[-1])
                         if res_json.get('status') == 'success':
-                            kindle_result = {'status': 'success', 'message': f'Appended new chapter(s) to {os.path.basename(remote_target_path)} on Kindle!'}
+                            kindle_result = {
+                                'status': 'success',
+                                'message': f'Appended new chapter(s) to {os.path.basename(remote_target_path)} on Kindle!',
+                                'remote_target_path': remote_target_path
+                            }
                         else:
                             kindle_result = {'status': 'error', 'message': res_json.get('message', 'Kindle merge failed')}
                     else:
@@ -1795,6 +1804,7 @@ def main():
                 remote_folder = req.get('remote_folder', '')
                 save_to_pc = req.get('save_to_pc', True)
                 save_to_kindle = req.get('save_to_kindle', req.get('auto_transfer', True))
+                known_remote_path = req.get('known_remote_path') or None
                 result = append_to_volume(
                     local_target_cbz,
                     delta_zip_path,
@@ -1805,7 +1815,8 @@ def main():
                     port=port,
                     user=user,
                     password=password,
-                    key_path=key_path
+                    key_path=key_path,
+                    known_remote_path=known_remote_path
                 )
                 send_message(result)
             elif action == 'delete_chapters':

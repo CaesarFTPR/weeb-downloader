@@ -916,16 +916,33 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
     );
   }
 
-  const deltaZip = new JSZip();
+  // 2. Setup cumulative state & bookmark tracking
+  const currentChaptersList = [...existingChaptersList];
   let globalPageCounter = existingPageCount;
-  const chapterBookmarks = [];
-  const allPagesXml = [];
+  const seenBookmarkKeys = new Set(currentChaptersList.map(getChapterKey));
+  let coverAdded = (currentChaptersList.length > 0) || seenBookmarkKeys.has('cover');
+  let knownRemotePath = null;
+  const remoteFolder = `${settings.remotePath.replace(/\/+$/, '')}/`;
 
-  // If initial volume creation, embed the manga cover poster as page 0
-  const hasExistingContent = Boolean(existingChaptersList && existingChaptersList.length > 0);
-  if (!hasExistingContent && manga && manga.coverUrl) {
+  // Build existing bookmarks from existing chapters
+  const accumulatedBookmarks = [];
+  for (const folder of currentChaptersList) {
+    const k = getChapterKey(folder);
+    let cleanTitle = folder.replace(/^\d+(?:\.\d+)?[\._\-]\s*/, '');
+    if (k === 'cover') cleanTitle = 'Обложка (Cover)';
+    accumulatedBookmarks.push({
+      key: k,
+      title: cleanTitle,
+      startPage: 0,
+      filePath: `${folder}/001.webp`
+    });
+  }
+
+  // Cover buffer cached for initial chapter delta if not yet in volume
+  let coverDataCache = null;
+  if (!coverAdded && manga && manga.coverUrl) {
     try {
-      updateAndBroadcastProgress('Adding manga cover image...', 1);
+      updateAndBroadcastProgress('Downloading manga cover poster...', 1);
       const coverData = await fetchImageBytes(tabId, manga.coverUrl);
       let coverExt = getExtensionFromUrl(manga.coverUrl, coverData.mime);
       let coverBuffer = coverData.buffer;
@@ -934,53 +951,26 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
         coverBuffer = opt.buffer;
         if (opt.ext) coverExt = opt.ext;
       }
-      const coverFolder = '00. Cover';
-      const coverFilename = `${coverFolder}/000_cover.${coverExt}`;
-      deltaZip.file(coverFilename, coverBuffer);
-      chapterBookmarks.push({
-        key: 'cover',
-        title: 'Обложка (Cover)',
-        filePath: coverFilename
-      });
-      allPagesXml.push(`    <Page Image="${globalPageCounter}" Bookmark="Обложка" Type="FrontCover" />`);
-      globalPageCounter++;
+      coverDataCache = {
+        filename: `00. Cover/000_cover.${coverExt}`,
+        buffer: coverBuffer
+      };
     } catch (e) {
-      console.warn('[WeebDownloader] Could not embed cover image in cumulative tome:', e);
+      console.warn('[WeebDownloader] Could not fetch cover poster:', e);
     }
   }
 
-  // 2. Download and optimize new chapters
-  for (let chIdx = 0; chIdx < chaptersToDownload.length; chIdx++) {
-    if (downloadState.cancelRequested) break;
+  // 3. Process and stream chapter-by-chapter in real-time
+  const totalToDownload = chaptersToDownload.length;
+  let successfulChapters = 0;
 
-    const chapter = chaptersToDownload[chIdx];
-    let imageUrls;
-    try {
-      imageUrls = await fetchChapterPages(tabId, chapter.url);
-    } catch (e) {
-      console.warn(`[WeebDownloader] Skipping chapter ${chapter.name}:`, e);
-      continue;
+  for (let chIdx = 0; chIdx < totalToDownload; chIdx++) {
+    if (downloadState.cancelRequested) {
+      updateAndBroadcastProgress('Download cancelled by user.', downloadState.percent);
+      break;
     }
 
-    const shouldOptimize = settings && settings.optimizeKindle !== false;
-    const pageImages = await downloadImagesConcurrently(
-      tabId,
-      imageUrls,
-      8,
-      (completed, total) => {
-        updateAndBroadcastProgress(
-          shouldOptimize
-            ? `Tome: Ch ${chIdx + 1}/${chaptersToDownload.length} (Down & Opt ${completed}/${total})`
-            : `Tome: Ch ${chIdx + 1}/${chaptersToDownload.length} (Page ${completed}/${total})`,
-          Math.floor(((chIdx + (completed / total)) / chaptersToDownload.length) * 90),
-          { currentChapterIndex: chIdx + 1, currentChapterName: chapter.name }
-        );
-      },
-      shouldOptimize ? settings : null
-    );
-
-    if (downloadState.cancelRequested || !pageImages) break;
-
+    const chapter = chaptersToDownload[chIdx];
     const chNum = (chapter.chapterNumber !== undefined && chapter.chapterNumber !== null)
       ? chapter.chapterNumber
       : (chIdx + 1);
@@ -990,86 +980,119 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
       : `${String(Math.floor(nVal)).padStart(2, '0')}.${String(chNum).split('.')[1]}`;
     const cleanChTitle = chapter.name || `Глава ${chNum}`;
     const cleanFolderName = `${folderPrefix}. ${sanitizeFilename(cleanChTitle)}`;
+    const chapterKey = getChapterKey(cleanChTitle);
+
+    // 3.1. Fetch page image URLs
+    let imageUrls;
+    try {
+      imageUrls = await fetchChapterPages(tabId, chapter.url);
+    } catch (e) {
+      console.warn(`[WeebDownloader] Skipping chapter ${chapter.name}:`, e);
+      continue;
+    }
+
+    // 3.2. Concurrently download and optimize images for THIS chapter only
+    const shouldOptimize = settings && settings.optimizeKindle !== false;
+    let pageImages = null;
+    try {
+      pageImages = await downloadImagesConcurrently(
+        tabId,
+        imageUrls,
+        8,
+        (completed, total) => {
+          const basePct = Math.floor((chIdx / totalToDownload) * 95);
+          const chPct = Math.floor((completed / total) * (95 / totalToDownload));
+          updateAndBroadcastProgress(
+            shouldOptimize
+              ? `[${chIdx + 1}/${totalToDownload}] ${cleanChTitle} (Opt ${completed}/${total})`
+              : `[${chIdx + 1}/${totalToDownload}] ${cleanChTitle} (Page ${completed}/${total})`,
+            basePct + chPct,
+            { currentChapterIndex: chIdx + 1, currentChapterName: chapter.name }
+          );
+        },
+        shouldOptimize ? settings : null
+      );
+    } catch (err) {
+      console.error(`[WeebDownloader] Error downloading chapter ${cleanChTitle}:`, err);
+      continue;
+    }
+
+    if (downloadState.cancelRequested || !pageImages || pageImages.length === 0) break;
+
+    // 3.3. Create lightweight single-chapter delta ZIP (~3-5 MB in RAM)
+    const chapterDeltaZip = new JSZip();
+    let chapterStartPage = globalPageCounter;
+
+    // If cover hasn't been added to the volume yet, embed it in this delta
+    if (!coverAdded && coverDataCache) {
+      chapterDeltaZip.file(coverDataCache.filename, coverDataCache.buffer);
+      if (!seenBookmarkKeys.has('cover')) {
+        seenBookmarkKeys.add('cover');
+        accumulatedBookmarks.unshift({
+          key: 'cover',
+          title: 'Обложка (Cover)',
+          startPage: 0,
+          filePath: coverDataCache.filename
+        });
+      }
+      coverAdded = true;
+      chapterStartPage++;
+      globalPageCounter++;
+    }
 
     for (let pIdx = 0; pIdx < pageImages.length; pIdx++) {
-      if (downloadState.cancelRequested) break;
       const page = pageImages[pIdx];
       const pageFilename = `${String(pIdx + 1).padStart(3, '0')}.${page.ext}`;
       const relativeZipPath = `${cleanFolderName}/${pageFilename}`;
-      deltaZip.file(relativeZipPath, page.buffer);
-
-      if (pIdx === 0) {
-        chapterBookmarks.push({
-          key: getChapterKey(cleanChTitle),
-          title: cleanChTitle,
-          filePath: relativeZipPath
-        });
-        allPagesXml.push(`    <Page Image="${globalPageCounter}" Bookmark="${escapeXml(cleanChTitle)}" Type="Story" />`);
-      } else {
-        allPagesXml.push(`    <Page Image="${globalPageCounter}" Type="Story" />`);
-      }
-      globalPageCounter++;
+      chapterDeltaZip.file(relativeZipPath, page.buffer);
     }
-  }
+    globalPageCounter += pageImages.length;
 
-  if (downloadState.cancelRequested) return;
-
-  // 3. Build updated ComicInfo.xml and toc.ncx with clean de-duplication
-  const mergedBookmarks = [];
-  const seenBookmarkKeys = new Set();
-
-  if (existingChaptersList && existingChaptersList.length > 0) {
-    for (const folder of existingChaptersList) {
-      const k = getChapterKey(folder);
-      if (seenBookmarkKeys.has(k)) continue;
-      seenBookmarkKeys.add(k);
-
-      let cleanTitle = folder.replace(/^\d+(?:\.\d+)?[\._\-]\s*/, '');
-      if (k === 'cover') cleanTitle = 'Обложка (Cover)';
-      mergedBookmarks.push({
-        key: k,
-        title: cleanTitle,
-        filePath: `${folder}/001.webp`
+    // Register chapter bookmark
+    if (!seenBookmarkKeys.has(chapterKey)) {
+      seenBookmarkKeys.add(chapterKey);
+      accumulatedBookmarks.push({
+        key: chapterKey,
+        title: cleanChTitle,
+        startPage: chapterStartPage,
+        filePath: `${cleanFolderName}/001.${pageImages[0]?.ext || 'webp'}`
       });
     }
-  }
-  for (const b of chapterBookmarks) {
-    const k = b.key || getChapterKey(b.title);
-    if (!seenBookmarkKeys.has(k)) {
-      seenBookmarkKeys.add(k);
-      mergedBookmarks.push(b);
-    }
-  }
 
-  // Sort bookmarks so Cover is first, followed by chapters in natural ascending order
-  mergedBookmarks.sort((a, b) => {
-    if (a.key === 'cover') return -1;
-    if (b.key === 'cover') return 1;
-    const numA = parseFloat(a.key.replace('ch_', '')) || 0;
-    const numB = parseFloat(b.key.replace('ch_', '')) || 0;
-    return numA - numB;
-  });
+    // Sort bookmarks: Cover first, then naturally sorted chapters
+    accumulatedBookmarks.sort((a, b) => {
+      if (a.key === 'cover') return -1;
+      if (b.key === 'cover') return 1;
+      const numA = parseFloat(a.key.replace('ch_', '')) || 0;
+      const numB = parseFloat(b.key.replace('ch_', '')) || 0;
+      return numA - numB;
+    });
 
-  const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
+    // Generate updated ComicInfo.xml and toc.ncx for KOReader
+    const pagesXml = accumulatedBookmarks.map(b =>
+      `    <Page Image="${b.startPage || 0}" Bookmark="${escapeXml(b.title)}" Type="${b.key === 'cover' ? 'FrontCover' : 'Story'}" />`
+    ).join('\n');
+
+    const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Title>${escapeXml(manga.title)}</Title>
   <Series>${escapeXml(manga.title)}</Series>
   <PageCount>${globalPageCounter}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
   <Pages>
-${allPagesXml.join('\n')}
+${pagesXml}
   </Pages>
 </ComicInfo>`;
-  deltaZip.file('ComicInfo.xml', comicInfoXml);
+    chapterDeltaZip.file('ComicInfo.xml', comicInfoXml);
 
-  const navPointsXml = mergedBookmarks.map((b, idx) => `    <navPoint id="navPoint-${idx + 1}" playOrder="${idx + 1}">
+    const navPointsXml = accumulatedBookmarks.map((b, idx) => `    <navPoint id="navPoint-${idx + 1}" playOrder="${idx + 1}">
       <navLabel>
         <text>${escapeXml(b.title)}</text>
       </navLabel>
       <content src="${escapeXml(b.filePath)}"/>
     </navPoint>`).join('\n');
 
-  const tocNcx = `<?xml version="1.0" encoding="UTF-8"?>
+    const tocNcx = `<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
   <head>
     <meta name="dtb:uid" content="urn:uuid:${escapeXml(manga.seriesId || 'manga-volume')}"/>
@@ -1084,93 +1107,101 @@ ${allPagesXml.join('\n')}
 ${navPointsXml}
   </navMap>
 </ncx>`;
-  deltaZip.file('toc.ncx', tocNcx);
+    chapterDeltaZip.file('toc.ncx', tocNcx);
 
-  updateAndBroadcastProgress('Packaging delta payload...', 92);
-  const deltaBase64 = await deltaZip.generateAsync({ type: 'base64', compression: 'STORE' });
+    // 3.4. Package delta and save via Native Host
+    updateAndBroadcastProgress(`[${chIdx + 1}/${totalToDownload}] Packaging ${cleanChTitle}...`, Math.floor(((chIdx + 0.8) / totalToDownload) * 95));
+    const deltaBase64 = await chapterDeltaZip.generateAsync({ type: 'base64', compression: 'STORE' });
 
-  // 4. Save delta file directly via Native Host (avoids Chrome download bubble entirely)
-  const stagingFilename = `delta_${Date.now()}.${format}`;
-  let localDeltaPath = `/tmp/${stagingFilename}`;
+    const stagingFilename = `delta_${Date.now()}_${chIdx}.${format}`;
+    let localDeltaPath = `/tmp/${stagingFilename}`;
 
-  updateAndBroadcastProgress('Saving delta payload...', 94);
-  try {
-    await saveBase64ViaNativeHost(deltaBase64, localDeltaPath);
-  } catch (e) {
-    console.warn('[WeebDownloader] Native direct write failed, falling back to chrome.downloads:', e);
-    const stagingRel = downloadPaths.chromeSubfolder
-      ? `${downloadPaths.chromeSubfolder}/${stagingFilename}`
-      : stagingFilename;
-    const mimeType = (format === 'cbz') ? 'application/octet-stream' : 'application/zip';
-    const saveDeltaRes = await saveBase64ToFile(deltaBase64, mimeType, stagingRel);
-    localDeltaPath = saveDeltaRes?.savedPath || `${downloadPaths.desiredDir}/${stagingFilename}`;
+    try {
+      await saveBase64ViaNativeHost(deltaBase64, localDeltaPath);
+    } catch (e) {
+      console.warn('[WeebDownloader] Direct native write fallback to chrome.downloads:', e);
+      const stagingRel = downloadPaths.chromeSubfolder ? `${downloadPaths.chromeSubfolder}/${stagingFilename}` : stagingFilename;
+      const mimeType = (format === 'cbz') ? 'application/octet-stream' : 'application/zip';
+      const saveRes = await saveBase64ToFile(deltaBase64, mimeType, stagingRel);
+      localDeltaPath = saveRes?.savedPath || `${downloadPaths.desiredDir}/${stagingFilename}`;
+    }
+
+    // 3.5. Instant in-place merge on PC (0.05s) and Kindle (0.12s)
+    updateAndBroadcastProgress(
+      saveToKindle
+        ? `[${chIdx + 1}/${totalToDownload}] Merging ${cleanChTitle} & syncing to Kindle...`
+        : `[${chIdx + 1}/${totalToDownload}] Merging ${cleanChTitle} into local tome...`,
+      Math.floor(((chIdx + 0.95) / totalToDownload) * 95)
+    );
+
+    try {
+      const mergeRes = await sendNativeMessage({
+        action: 'append_to_volume',
+        local_target_cbz: localVolumePath,
+        delta_zip_path: localDeltaPath,
+        remote_folder: remoteFolder,
+        save_to_pc: saveToPc,
+        save_to_kindle: saveToKindle,
+        host: settings.sshHost,
+        port: settings.sshPort,
+        user: settings.sshUser,
+        password: settings.sshPassword,
+        key_path: settings.sshKeyPath,
+        known_remote_path: knownRemotePath
+      });
+
+      if (mergeRes && mergeRes.kindle_result && mergeRes.kindle_result.remote_target_path) {
+        knownRemotePath = mergeRes.kindle_result.remote_target_path;
+      }
+
+      const pcSuccess = Boolean(saveToPc && mergeRes && mergeRes.status === 'success');
+      const kindleSuccess = Boolean(saveToKindle && mergeRes && mergeRes.kindle_result?.status === 'success');
+
+      if (pcSuccess || kindleSuccess || (!saveToPc && !saveToKindle)) {
+        await markChapterAsDownloaded(manga.seriesId, chapter.id, {
+          pc: pcSuccess,
+          kindle: kindleSuccess
+        });
+        downloadState.completedChapters.push(chapter.id);
+        currentChaptersList.push(cleanFolderName);
+        successfulChapters++;
+      } else {
+        console.warn(`[WeebDownloader] Merge warning for ${cleanChTitle}:`, mergeRes);
+      }
+    } catch (mergeErr) {
+      console.error(`[WeebDownloader] Merge error on chapter ${cleanChTitle}:`, mergeErr);
+    } finally {
+      // Clean up single chapter delta file immediately to keep disk clean
+      if (localDeltaPath) {
+        try {
+          await sendNativeMessage({ action: 'delete_local_file', path: localDeltaPath });
+        } catch (e) {}
+      }
+      if (chrome.downloads && chrome.downloads.erase) {
+        try {
+          chrome.downloads.erase({ query: ['delta_'] });
+        } catch (e) {}
+      }
+    }
+
+    // Brief 150ms breather for garbage collector and WeebCentral rate limits
+    await new Promise(r => setTimeout(r, 150));
   }
 
-  // 5. In-place merge on PC and Kindle via Native Host
-  updateAndBroadcastProgress('Merging into Manga Tome & syncing to Kindle...', 96);
-  const remoteFolder = `${settings.remotePath.replace(/\/+$/, '')}/`;
-
-  try {
-    const mergeRes = await sendNativeMessage({
-      action: 'append_to_volume',
-      local_target_cbz: localVolumePath,
-      delta_zip_path: localDeltaPath,
-      remote_folder: remoteFolder,
-      save_to_pc: saveToPc,
-      save_to_kindle: saveToKindle,
-      host: settings.sshHost,
-      port: settings.sshPort,
-      user: settings.sshUser,
-      password: settings.sshPassword,
-      key_path: settings.sshKeyPath
-    });
-
-    const pcSuccess = Boolean(saveToPc && mergeRes && mergeRes.status === 'success');
-    const kindleSuccess = Boolean(saveToKindle && mergeRes && mergeRes.kindle_result?.status === 'success');
-
-    if (mergeRes && mergeRes.status === 'success') {
-      const actionDesc = mergeRes.action === 'merged' ? 'Appended to' : 'Created';
-      const kindleMsg = mergeRes.kindle_result?.message ? ` (${mergeRes.kindle_result.message})` : '';
-
-      if (!saveToPc && kindleSuccess) {
-        updateAndBroadcastProgress(`🎉 Synced directly to Kindle (${volumeName})!`, 100, { isCompleted: true });
-      } else if (!saveToPc && !kindleSuccess) {
-        const errDetail = mergeRes.kindle_result?.message || 'Kindle sync failed';
-        updateAndBroadcastProgress(`⚠️ Kindle sync failed: ${errDetail}`, 100, { error: errDetail, isCompleted: true });
-      } else if (saveToKindle && !kindleSuccess) {
-        const errDetail = mergeRes.kindle_result?.message || 'Kindle sync failed';
-        updateAndBroadcastProgress(`Saved to PC, but Kindle sync failed: ${errDetail}`, 100, { error: errDetail, isCompleted: true });
-      } else if (saveToKindle) {
-        updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName}!${kindleMsg}`, 100, { isCompleted: true });
-      } else {
-        updateAndBroadcastProgress(`🎉 ${actionDesc} ${volumeName} on PC!`, 100, { isCompleted: true });
-      }
-    } else {
-      console.warn('[WeebDownloader] Merge warning:', mergeRes);
-      updateAndBroadcastProgress(`Tome update failed: ${mergeRes?.message || 'Native host error'}`, 100, { error: mergeRes?.message, isCompleted: true });
-    }
-
-    if (pcSuccess || kindleSuccess) {
-      await markMultipleChaptersAsDownloaded(manga.seriesId, chapters.map(c => c.id), {
-        pc: pcSuccess,
-        kindle: kindleSuccess
-      });
-      downloadState.completedChapters = chapters.map(c => c.id);
-    }
-  } catch (err) {
-    console.error('[WeebDownloader] Native merge error:', err);
-    updateAndBroadcastProgress(`Merge error: ${err.message}`, 100, { error: err.message });
-  } finally {
-    if (localDeltaPath) {
-      try {
-        await sendNativeMessage({ action: 'delete_local_file', path: localDeltaPath });
-      } catch (e) {}
-    }
-    if (chrome.downloads && chrome.downloads.erase) {
-      try {
-        chrome.downloads.erase({ query: ['delta_'] });
-      } catch (e) {}
-    }
+  // 4. Final summary
+  if (successfulChapters > 0) {
+    const targetDesc = (!saveToPc && saveToKindle) ? 'Kindle' : (saveToPc && !saveToKindle ? 'PC' : 'PC & Kindle');
+    updateAndBroadcastProgress(
+      `🎉 Complete! ${successfulChapters} chapter(s) saved to ${targetDesc} (${volumeName})!`,
+      100,
+      { isCompleted: true }
+    );
+  } else if (!downloadState.cancelRequested) {
+    updateAndBroadcastProgress(
+      '⚠️ Download completed with no new chapters appended.',
+      100,
+      { isCompleted: true }
+    );
   }
 }
 
@@ -1351,8 +1382,21 @@ async function downloadImagesConcurrently(tabId, imageUrls, concurrency = 8, onP
           ext: ext
         };
       } catch (err) {
-        console.error(`[WeebDownloader] Error downloading/optimizing page ${index + 1}:`, err);
-        throw err;
+        console.warn(`[WeebDownloader] Page ${index + 1} failed after retries:`, err);
+        // Fallback transparent 1x1 image so that one failed page does not corrupt/cancel the whole tome
+        const fallbackBuf = new Uint8Array([
+          0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+          0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+          0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+          0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+          0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+          0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+        ]).buffer;
+        results[index] = {
+          buffer: fallbackBuf,
+          mime: 'image/png',
+          ext: 'png'
+        };
       }
 
       completedCount++;
@@ -1373,14 +1417,18 @@ async function downloadImagesConcurrently(tabId, imageUrls, concurrency = 8, onP
 /**
  * Fetch image as ArrayBuffer (direct fetch, fallback to content script)
  */
-async function fetchImageBytes(tabId, url, maxRetries = 3) {
+async function fetchImageBytes(tabId, url, maxRetries = 5) {
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     if (downloadState.cancelRequested) break;
 
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, {
+        headers: {
+          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+        }
+      });
       if (res.ok) {
         const buffer = await res.arrayBuffer();
         const mime = res.headers.get('content-type') || 'image/jpeg';
@@ -1389,10 +1437,12 @@ async function fetchImageBytes(tabId, url, maxRetries = 3) {
       if (res.status === 429 || res.status >= 500) {
         throw new Error(`HTTP ${res.status}`);
       }
+      throw new Error(`HTTP ${res.status}`);
     } catch (e) {
       lastError = e;
       if (attempt < maxRetries) {
-        const delay = attempt * 1000;
+        const isRateLimited = e.message && (e.message.includes('429') || e.message.includes('503'));
+        const delay = isRateLimited ? Math.min(8000, 1500 * attempt) : (attempt * 800);
         await new Promise(r => setTimeout(r, delay));
       }
     }
@@ -1412,7 +1462,7 @@ async function fetchImageBytes(tabId, url, maxRetries = 3) {
           for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
           }
-          return { buffer: bytes.buffer, mime: res.data.mime };
+          return { buffer: bytes.buffer, mime: res.data.mime || 'image/jpeg' };
         }
       } catch (err) {
         console.warn(`[WeebDownloader] Content script fetch attempt ${attempt} failed:`, err);
