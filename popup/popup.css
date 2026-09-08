@@ -727,6 +727,29 @@ body {
   background-color: rgba(99, 102, 241, 0.1);
 }
 
+.btn-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.btn-sort:hover {
+  color: var(--accent-color);
+  background-color: rgba(99, 102, 241, 0.12);
+  border-color: rgba(99, 102, 241, 0.35);
+}
+
+.btn-sort:active {
+  transform: scale(0.96);
+}
+
 .divider {
   color: var(--text-muted);
 }

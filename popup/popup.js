@@ -37,6 +37,7 @@ let wasDownloading = false;
 let cancelRequested = false;
 let hideDownloaded = false;
 let currentReadingProgress = null;
+let chapterSortOrder = 'asc'; // 'asc' (1->N) or 'desc' (N->1)
 let savedMangaList = [];
 let browserTabManga = null;
 let browserTabChapters = [];
@@ -80,6 +81,9 @@ const elements = {
   btnSelectNext10: document.getElementById('btn-select-next-10'),
   btnInvertSelection: document.getElementById('btn-invert-selection'),
   btnSelectNew: document.getElementById('btn-select-new'),
+  btnToggleSort: document.getElementById('btn-toggle-sort'),
+  sortIcon: document.getElementById('sort-icon'),
+  sortLabel: document.getElementById('sort-label'),
   filterInput: document.getElementById('filter-input'),
   btnClearFilter: document.getElementById('btn-clear-filter'),
   btnToggleHideDownloaded: document.getElementById('btn-toggle-hide-downloaded'),
@@ -158,6 +162,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   await loadSettings();
   await loadSavedMangaList();
+
+  try {
+    const sortStored = await chrome.storage.local.get('weeb_chapter_sort_order');
+    if (sortStored && sortStored.weeb_chapter_sort_order) {
+      chapterSortOrder = sortStored.weeb_chapter_sort_order;
+    }
+  } catch (e) {}
+  updateSortButtonUI();
+
   setupEventListeners();
 
   // Check ongoing background download state
@@ -286,6 +299,17 @@ function setupEventListeners() {
   elements.btnInvertSelection.addEventListener('click', invertChapterSelection);
   if (elements.btnSelectNew) {
     elements.btnSelectNew.addEventListener('click', selectNewChapters);
+  }
+  if (elements.btnToggleSort) {
+    elements.btnToggleSort.addEventListener('click', () => {
+      chapterSortOrder = (chapterSortOrder === 'asc') ? 'desc' : 'asc';
+      updateSortButtonUI();
+      chrome.storage.local.set({ weeb_chapter_sort_order: chapterSortOrder }).catch(() => {});
+      if (elements.chapterList) {
+        elements.chapterList.scrollTop = 0;
+      }
+      renderChapterList();
+    });
   }
   elements.filterInput.addEventListener('input', () => {
     if (elements.btnClearFilter) {
@@ -1682,7 +1706,12 @@ function renderChapterList() {
   let visibleCount = 0;
   const fragment = document.createDocumentFragment();
 
-  allChapters.forEach((chapter) => {
+  const displayChapters = [...allChapters];
+  if (chapterSortOrder === 'desc') {
+    displayChapters.reverse();
+  }
+
+  displayChapters.forEach((chapter) => {
     const isDownloaded = downloadedChapterIds.has(chapter.id);
     if (hideDownloaded && isDownloaded) return;
 
@@ -1751,6 +1780,14 @@ function renderChapterList() {
       }
       metaRight.appendChild(badge);
     }
+
+    if (chapter.date) {
+      const dateSpan = document.createElement('span');
+      dateSpan.className = 'chapter-date';
+      dateSpan.textContent = formatChapterDate(chapter.date);
+      metaRight.appendChild(dateSpan);
+    }
+
     details.appendChild(nameSpan);
     details.appendChild(metaRight);
 
@@ -1915,6 +1952,20 @@ function saveSelectionToSession() {
   if (currentManga && currentManga.seriesId) {
     const selKey = 'selection_' + currentManga.seriesId;
     sessionStore.set({ [selKey]: Array.from(selectedChapterIds) }).catch(() => {});
+  }
+}
+
+function updateSortButtonUI() {
+  if (elements.sortIcon && elements.sortLabel && elements.btnToggleSort) {
+    if (chapterSortOrder === 'desc') {
+      elements.sortIcon.textContent = '⬇️';
+      elements.sortLabel.textContent = 'N→1';
+      elements.btnToggleSort.title = 'Сортировка списка: сначала новые главы (N→1). Нажмите, чтобы изменить на 1→N';
+    } else {
+      elements.sortIcon.textContent = '⬆️';
+      elements.sortLabel.textContent = '1→N';
+      elements.btnToggleSort.title = 'Сортировка списка: сначала первые главы (1→N). Нажмите, чтобы изменить на N→1';
+    }
   }
 }
 
