@@ -163,7 +163,11 @@ async function getMangaInfo() {
             const a = sub.querySelector('a');
             const span = sub.querySelector('span');
             if (a) {
-              const rel = span ? ` (${span.textContent.trim()})` : '';
+              let rel = '';
+              if (span) {
+                const cleanSpan = span.textContent.trim().replace(/^\(+|\)+$/g, '').trim();
+                if (cleanSpan) rel = ` (${cleanSpan})`;
+              }
               relItems.push(`${a.textContent.trim()}${rel}`);
             }
           });

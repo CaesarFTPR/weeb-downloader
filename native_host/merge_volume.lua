@@ -255,7 +255,9 @@ local function update_koreader_metadata(target_cbz, pages)
             if year then data["doc_props"]["released"] = year end
             if official_translation then data["doc_props"]["official_translation"] = official_translation end
             if anime_adaptation then data["doc_props"]["anime_adaptation"] = anime_adaptation end
-            if related_series then data["doc_props"]["related_series"] = related_series end
+            if related_series then
+                data["doc_props"]["related_series"] = tostring(related_series):gsub("%(%((.-)%)%)", "(%1)")
+            end
             if associated_names then data["doc_props"]["associated_names"] = associated_names end
             if age_rating then
                 data["doc_props"]["adult_content"] = (age_rating:find("18") or age_rating:lower():find("adult")) and "Yes" or "No"

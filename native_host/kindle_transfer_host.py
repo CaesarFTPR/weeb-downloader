@@ -398,7 +398,8 @@ def extract_metadata_from_cbz(cbz_path):
                     if year: meta['released'] = year.strip()
                     if off_trans: meta['official_translation'] = off_trans.strip()
                     if anime: meta['anime_adaptation'] = anime.strip()
-                    if related: meta['related_series'] = related.strip()
+                    if related:
+                        meta['related_series'] = re.sub(r'\(\(\s*(.*?)\s*\)\)', r'(\1)', html.unescape(related)).strip()
                     if age_rating: meta['adult_content'] = 'Yes' if ('18' in age_rating or 'adult' in age_rating.lower()) else 'No'
                     if scan_info: meta['source'] = scan_info.strip()
                 except Exception as e:

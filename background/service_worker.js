@@ -2519,7 +2519,11 @@ async function enrichMangaMetadata(manga) {
             const aM = im[1].match(/<a[^>]*>([^<]+)<\/a>/i);
             const spanM = im[1].match(/<span[^>]*>([^<]+)<\/span>/i);
             if (aM && aM[1]) {
-              const rel = spanM && spanM[1] ? ` (${spanM[1].trim()})` : '';
+              let rel = '';
+              if (spanM && spanM[1]) {
+                const cleanSpan = unescapeXml(spanM[1]).trim().replace(/^\(+|\)+$/g, '').trim();
+                if (cleanSpan) rel = ` (${cleanSpan})`;
+              }
               relItems.push(`${unescapeXml(aM[1]).trim()}${rel}`);
             }
           }

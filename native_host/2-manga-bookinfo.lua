@@ -1,6 +1,6 @@
 --[[--
   KOReader User Patch: Manga Dedicated Book Information Card
-  Version: 2.3.0
+  Version: 2.3.1
   Priority: 2 (Late - loaded after UIManager)
 
   Transforms KOReader's "Book Information" dialog for Manga/CBZ into a clean,
@@ -24,10 +24,10 @@
 --]]--
 
 local ok_bi, BookInfo = pcall(require, "apps/filemanager/filemanagerbookinfo")
-if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.3.0" then
+if not ok_bi or not BookInfo or BookInfo._manga_custom_patched == "2.3.1" then
     return
 end
-BookInfo._manga_custom_patched = "2.3.0"
+BookInfo._manga_custom_patched = "2.3.1"
 
 local ok_bl, BookList = pcall(require, "ui/widget/booklist")
 local ok_ds, DocSettings = pcall(require, "docsettings")
@@ -62,6 +62,11 @@ local function is_empty(val)
     if val == nil then return true end
     local s = tostring(val):gsub("^%s*(.-)%s*$", "%1")
     return (s == "" or s == "nil" or s == "Н/Д" or s == "N/A" or s == "n/a")
+end
+
+local function clean_related(str)
+    if not str then return str end
+    return tostring(str):gsub("%(%((.-)%)%)", "(%1)")
 end
 
 -- Desired display priority for Manga Card in KOReader:
@@ -307,6 +312,12 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
     end
 
     -- Keep real_props in sync with any parsed values
+    if book_props and book_props.related_series then
+        book_props.related_series = clean_related(book_props.related_series)
+    end
+    if real_props and real_props.related_series then
+        real_props.related_series = clean_related(real_props.related_series)
+    end
     for k, v in pairs(book_props) do
         if not is_empty(v) and is_empty(real_props[k]) then
             real_props[k] = v
@@ -372,6 +383,10 @@ BookInfo.show = function(self, doc_settings_or_file, book_props)
                         if clean:find("Ключевые слова", 1, true) or clean:find("Keywords", 1, true) then
                             clean = "Тэги:"
                             pair[1] = "Тэги:"
+                        end
+                        if clean:find("Связанные серии", 1, true) or clean:find("Related", 1, true) then
+                            val = clean_related(val)
+                            pair[2] = val
                         end
                         table.insert(kept, pair)
                         local pkey = label_to_prop[clean]
