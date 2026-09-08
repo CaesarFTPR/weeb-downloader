@@ -1991,6 +1991,85 @@ async function isBlankWhitePage(arrayBuffer, mime) {
 }
 
 /**
+ * Detect text-only translator notes, recruitment letters, or group promos.
+ * These are non-manga text documents typed on a plain white canvas (e.g., Notepad, Word)
+ * characterized by:
+ * - Predominantly light background (whiteRatio >= 0.60)
+ * - Substantial empty horizontal rows between text lines or in margins (emptyRowsRatio >= 0.20)
+ * - AND either multiple distinct text lines (textRuns >= 5) OR the bottom half is completely empty (>= 90% white)
+ */
+async function isTextOnlyPromoPage(arrayBuffer, mime) {
+  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap === 'undefined') {
+    return false;
+  }
+  let bmp = null;
+  try {
+    const blob = new Blob([arrayBuffer], { type: mime || 'image/jpeg' });
+    bmp = await createImageBitmap(blob);
+    const targetW = 100;
+    const targetH = 150;
+    const canvas = new OffscreenCanvas(targetW, targetH);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bmp, 0, 0, targetW, targetH);
+    bmp.close();
+    bmp = null;
+    const imgData = ctx.getImageData(0, 0, targetW, targetH).data;
+
+    let whiteCount = 0;
+    const totalPixels = targetW * targetH;
+    let emptyRows = 0;
+    let textRuns = 0;
+    let inTextLine = false;
+
+    for (let y = 0; y < targetH; y++) {
+      let rowDarkCount = 0;
+      for (let x = 0; x < targetW; x++) {
+        const idx = (y * targetW + x) * 4;
+        const luma = (imgData[idx] * 77 + imgData[idx + 1] * 150 + imgData[idx + 2] * 29) >> 8;
+        if (luma >= 235) whiteCount++;
+        if (luma < 220) rowDarkCount++;
+      }
+      if (rowDarkCount <= 1) {
+        emptyRows++;
+        if (inTextLine) inTextLine = false;
+      } else {
+        if (!inTextLine) {
+          textRuns++;
+          inTextLine = true;
+        }
+      }
+    }
+
+    const emptyRowsRatio = emptyRows / targetH;
+    const whiteRatio = whiteCount / totalPixels;
+
+    let bottomHalfWhite = 0;
+    const halfH = Math.floor(targetH / 2);
+    for (let y = halfH; y < targetH; y++) {
+      for (let x = 0; x < targetW; x++) {
+        const idx = (y * targetW + x) * 4;
+        const luma = (imgData[idx] * 77 + imgData[idx + 1] * 150 + imgData[idx + 2] * 29) >> 8;
+        if (luma >= 235) bottomHalfWhite++;
+      }
+    }
+    const bottomHalfWhiteRatio = bottomHalfWhite / (targetW * (targetH - halfH));
+
+    if (emptyRowsRatio >= 0.20 && whiteRatio >= 0.60) {
+      if (textRuns >= 5 || bottomHalfWhiteRatio >= 0.90) {
+        return true;
+      }
+    }
+    return false;
+  } catch (e) {
+    return false;
+  } finally {
+    if (bmp) {
+      try { bmp.close(); } catch (e) {}
+    }
+  }
+}
+
+/**
  * Inspect pixel dimensions of an image
  */
 async function getImageDimensions(arrayBuffer, mime) {
@@ -2041,9 +2120,12 @@ async function initSmartFilterForSeries(tabId, seriesId, chapters) {
     filterData = {
       knownHashes: new Set(raw.knownHashes || []),
       visualHashes: raw.visualHashes || [],
-      boundaryHashes: new Map(Object.entries(raw.boundaryHashes || {}))
+      boundaryHashes: new Map(Object.entries(raw.boundaryHashes || {})),
+      boundaryCandidates: []
     };
     seriesSmartFilterCache.set(seriesId, filterData);
+  } else if (!filterData.boundaryCandidates) {
+    filterData.boundaryCandidates = [];
   }
 
   let testChapters = chapters ? [...chapters] : [];
@@ -2059,52 +2141,77 @@ async function initSmartFilterForSeries(tabId, seriesId, chapters) {
     } catch (e) {}
   }
 
-  if (testChapters.length >= 2 && filterData.knownHashes.size < 2) {
+  // Multi-chapter pre-scan: sample up to 10 chapters to discover recurring credits across the series
+  if (testChapters.length >= 2) {
     try {
-      const ch0 = testChapters[0];
-      const ch1 = testChapters[1];
-      const [urls0, urls1] = await Promise.all([
-        fetchChapterPages(tabId, ch0.url).catch(() => []),
-        fetchChapterPages(tabId, ch1.url).catch(() => [])
-      ]);
+      const chaptersToScan = testChapters.slice(0, 10);
+      const boundarySamples = [];
 
-      if (urls0.length > 0 && urls1.length > 0) {
-        const sampleIndices0 = [0, 1, urls0.length - 1, urls0.length - 2].filter((v, i, a) => v >= 0 && v < urls0.length && a.indexOf(v) === i);
-        const sampleIndices1 = [0, 1, urls1.length - 1, urls1.length - 2].filter((v, i, a) => v >= 0 && v < urls1.length && a.indexOf(v) === i);
+      for (let cIdx = 0; cIdx < chaptersToScan.length; cIdx++) {
+        const ch = chaptersToScan[cIdx];
+        const urls = await fetchChapterPages(tabId, ch.url).catch(() => []);
+        if (!urls || urls.length === 0) continue;
 
-        const fetch0 = sampleIndices0.map(idx => fetchImageBytes(tabId, urls0[idx]).then(res => ({ ...res, idx, ch: 0 })).catch(() => null));
-        const fetch1 = sampleIndices1.map(idx => fetchImageBytes(tabId, urls1[idx]).then(res => ({ ...res, idx, ch: 1 })).catch(() => null));
+        const indices = [0, urls.length - 1];
+        if (urls.length > 2) indices.push(1);
+        if (urls.length > 3) indices.push(urls.length - 2);
+        const uniqueIndices = [...new Set(indices)];
 
-        const [res0, res1] = await Promise.all([Promise.all(fetch0), Promise.all(fetch1)]);
-        const items0 = res0.filter(Boolean);
-        const items1 = res1.filter(Boolean);
+        const fetched = await Promise.all(
+          uniqueIndices.map(idx =>
+            fetchImageBytes(tabId, urls[idx])
+              .then(res => ({ ...res, idx, total: urls.length, chIdx: cIdx, chTitle: ch.name || `Chapter ${cIdx + 1}` }))
+              .catch(() => null)
+          )
+        );
 
-        for (const it0 of items0) {
-          const h0 = await computePageHash(it0.buffer);
-          const v0 = await computeVisualHash(it0.buffer, it0.mime);
+        for (const item of fetched.filter(Boolean)) {
+          const isTextPromo = await isTextOnlyPromoPage(item.buffer, item.mime);
+          const hash = await computePageHash(item.buffer);
+          const vHash = await computeVisualHash(item.buffer, item.mime);
 
-          for (const it1 of items1) {
-            const isStart0 = it0.idx <= 1;
-            const isStart1 = it1.idx <= 1;
-            const isEnd0 = it0.idx >= urls0.length - 2;
-            const isEnd1 = it1.idx >= urls1.length - 2;
-
-            if ((isStart0 && isStart1) || (isEnd0 && isEnd1)) {
-              const h1 = await computePageHash(it1.buffer);
-              const v1 = await computeVisualHash(it1.buffer, it1.mime);
-
-              if (h0 === h1 || (v0 && v1 && hammingDistance(v0, v1) <= 10)) {
-                filterData.knownHashes.add(h0);
-                filterData.knownHashes.add(h1);
-                if (v0 && !filterData.visualHashes.includes(v0)) filterData.visualHashes.push(v0);
-                if (v1 && !filterData.visualHashes.includes(v1)) filterData.visualHashes.push(v1);
-                console.log(`[SmartFilter] Pre-detected recurring credit: ${h0.slice(0, 8)}... (${isStart0 ? 'start' : 'end'})`);
-              }
+          if (isTextPromo) {
+            filterData.knownHashes.add(hash);
+            if (vHash && !filterData.visualHashes.includes(vHash)) {
+              filterData.visualHashes.push(vHash);
             }
+            console.log(`[SmartFilter] Pre-detected text-only promo in ${item.chTitle}: ${hash.slice(0, 8)}...`);
+            continue;
+          }
+
+          const isStart = item.idx <= 1;
+          boundarySamples.push({
+            chIdx: item.chIdx,
+            idx: item.idx,
+            isStart,
+            hash,
+            vHash
+          });
+        }
+      }
+
+      // Cross-chapter comparison across all boundary samples
+      for (let i = 0; i < boundarySamples.length; i++) {
+        const s1 = boundarySamples[i];
+        for (let j = i + 1; j < boundarySamples.length; j++) {
+          const s2 = boundarySamples[j];
+          if (s1.chIdx === s2.chIdx) continue;
+          if (s1.isStart !== s2.isStart) continue;
+
+          const exactMatch = s1.hash === s2.hash;
+          const visualMatch = s1.vHash && s2.vHash && hammingDistance(s1.vHash, s2.vHash) <= 12;
+
+          if (exactMatch || visualMatch) {
+            filterData.knownHashes.add(s1.hash);
+            filterData.knownHashes.add(s2.hash);
+            if (s1.vHash && !filterData.visualHashes.includes(s1.vHash)) filterData.visualHashes.push(s1.vHash);
+            if (s2.vHash && !filterData.visualHashes.includes(s2.vHash)) filterData.visualHashes.push(s2.vHash);
+            console.log(`[SmartFilter] Pre-detected recurring credit between ch ${s1.chIdx} and ch ${s2.chIdx} (${s1.isStart ? 'start' : 'end'})`);
           }
         }
-        await saveSmartFilterData(seriesId, filterData);
       }
+
+      await saveSmartFilterData(seriesId, filterData);
     } catch (err) {
       console.warn('[SmartFilter] Pre-scan exception:', err);
     }
@@ -2162,24 +2269,40 @@ async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesI
         continue;
       }
 
-      // 2b. Recurring scanlation group credit check
+      // 2b. Text-only promo / translator note check
+      const isTextPromo = await isTextOnlyPromoPage(page.buffer, page.mime);
+      if (isTextPromo) {
+        const h = await computePageHash(page.buffer);
+        const vh = await computeVisualHash(page.buffer, page.mime);
+        filterData.knownHashes.add(h);
+        if (vh && !filterData.visualHashes.includes(vh)) filterData.visualHashes.push(vh);
+        removedCount++;
+        removalReasons.push(`Page ${i + 1}: Text-only translator/promo note`);
+        continue;
+      }
+
+      // 2c. Recurring scanlation group credit check
       const pageHash = await computePageHash(page.buffer);
       const visualHash = await computeVisualHash(page.buffer, page.mime);
 
       let isCredit = false;
       if (filterData.knownHashes.has(pageHash)) {
         isCredit = true;
-      } else if (visualHash && filterData.visualHashes.some(vh => hammingDistance(vh, visualHash) <= 10)) {
+      } else if (visualHash && filterData.visualHashes.some(vh => hammingDistance(vh, visualHash) <= 12)) {
         isCredit = true;
-      } else {
-        const count = (filterData.boundaryHashes.get(pageHash) || 0) + 1;
-        filterData.boundaryHashes.set(pageHash, count);
-        if (count >= 2) {
-          filterData.knownHashes.add(pageHash);
-          if (visualHash && !filterData.visualHashes.includes(visualHash)) {
-            filterData.visualHashes.push(visualHash);
-          }
+      } else if (filterData.boundaryCandidates && filterData.boundaryCandidates.length > 0) {
+        const isStart = isStartBoundary(i);
+        const match = filterData.boundaryCandidates.find(c =>
+          c.chapterIndex !== chapterIndex &&
+          c.isStart === isStart &&
+          (c.pageHash === pageHash || (visualHash && c.visualHash && hammingDistance(c.visualHash, visualHash) <= 12))
+        );
+        if (match) {
           isCredit = true;
+          filterData.knownHashes.add(pageHash);
+          filterData.knownHashes.add(match.pageHash);
+          if (visualHash && !filterData.visualHashes.includes(visualHash)) filterData.visualHashes.push(visualHash);
+          if (match.visualHash && !filterData.visualHashes.includes(match.visualHash)) filterData.visualHashes.push(match.visualHash);
           await saveSmartFilterData(seriesId, filterData);
         }
       }
@@ -2188,6 +2311,16 @@ async function filterChapterPages(pageImages, chapterIndex, chapterName, seriesI
         removedCount++;
         removalReasons.push(`Page ${i + 1}: Scanlation group promo/credit (${pageHash.slice(0, 8)}...)`);
         continue;
+      } else {
+        if (!filterData.boundaryCandidates) filterData.boundaryCandidates = [];
+        filterData.boundaryCandidates.push({
+          chapterIndex,
+          chapterName,
+          pageIndex: i,
+          isStart: isStartBoundary(i),
+          pageHash,
+          visualHash
+        });
       }
     }
 
