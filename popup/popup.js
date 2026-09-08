@@ -6,8 +6,9 @@ const DEFAULT_SETTINGS = {
   folderName: '{title}',
   optimizeKindle: true,
   optimizedFormat: 'webp',
-  maxResolution: 1680,
-  imageQuality: 0.75,
+  maxResolution: 1448,
+  imageQuality: 0.60,
+  autoCrop: true,
   grayscale: true,
   cleanPaper: true,
   sharpenEink: true,
@@ -136,6 +137,7 @@ const elements = {
   settingOptimizedFormat: document.getElementById('setting-optimized-format'),
   settingMaxResolution: document.getElementById('setting-max-resolution'),
   settingImageQuality: document.getElementById('setting-image-quality'),
+  settingAutoCrop: document.getElementById('setting-auto-crop'),
   settingGrayscale: document.getElementById('setting-grayscale'),
   settingCleanPaper: document.getElementById('setting-clean-paper'),
   settingSharpenEink: document.getElementById('setting-sharpen-eink'),
@@ -1114,10 +1116,13 @@ async function loadSettings() {
     elements.settingOptimizedFormat.value = currentSettings.optimizedFormat || 'webp';
   }
   if (elements.settingMaxResolution) {
-    elements.settingMaxResolution.value = String(currentSettings.maxResolution !== undefined ? currentSettings.maxResolution : 1680);
+    elements.settingMaxResolution.value = String(currentSettings.maxResolution !== undefined ? currentSettings.maxResolution : 1448);
   }
   if (elements.settingImageQuality) {
-    elements.settingImageQuality.value = String(currentSettings.imageQuality !== undefined ? currentSettings.imageQuality : 0.75);
+    elements.settingImageQuality.value = String(currentSettings.imageQuality !== undefined ? currentSettings.imageQuality : 0.60);
+  }
+  if (elements.settingAutoCrop) {
+    elements.settingAutoCrop.checked = currentSettings.autoCrop !== false;
   }
   if (elements.settingFilenameTemplate) {
     elements.settingFilenameTemplate.value = currentSettings.filenameTemplate || '{chapter}';
@@ -1155,8 +1160,9 @@ async function saveSettings() {
     skipExisting: elements.settingSkipExisting ? elements.settingSkipExisting.checked : true,
     optimizeKindle: elements.settingOptimizeKindle ? elements.settingOptimizeKindle.checked : true,
     optimizedFormat: elements.settingOptimizedFormat ? elements.settingOptimizedFormat.value : 'webp',
-    maxResolution: elements.settingMaxResolution ? parseInt(elements.settingMaxResolution.value, 10) : 1680,
-    imageQuality: elements.settingImageQuality ? parseFloat(elements.settingImageQuality.value) : 0.75,
+    maxResolution: elements.settingMaxResolution ? parseInt(elements.settingMaxResolution.value, 10) : 1448,
+    imageQuality: elements.settingImageQuality ? parseFloat(elements.settingImageQuality.value) : 0.60,
+    autoCrop: elements.settingAutoCrop ? elements.settingAutoCrop.checked : true,
     grayscale: elements.settingGrayscale ? elements.settingGrayscale.checked : true,
     cleanPaper: elements.settingCleanPaper ? elements.settingCleanPaper.checked : true,
     sharpenEink: elements.settingSharpenEink ? elements.settingSharpenEink.checked : true,

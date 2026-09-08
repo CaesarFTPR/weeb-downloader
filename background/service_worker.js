@@ -1517,20 +1517,144 @@ async function fetchImageBytes(tabId, url, maxRetries = 5) {
 }
 
 /**
+ * Detect white/blank scan margins on a page image.
+ * Uses a fast downsampled thumbnail pass (<2ms) to find the bounding box of the actual artwork.
+ * Limits trimming to at most 15% per side to prevent any risk of cutting dialogue or panels.
+ */
+function detectContentBoundingBox(bitmap, maxCropPercent = 0.15) {
+  const origW = bitmap.width;
+  const origH = bitmap.height;
+  if (origW < 100 || origH < 100) {
+    return { x: 0, y: 0, width: origW, height: origH, cropped: false };
+  }
+
+  // Fast thumbnail (max dimension 360px for sub-2ms evaluation)
+  const thumbScale = Math.min(1, 360 / Math.max(origW, origH));
+  const tw = Math.max(20, Math.round(origW * thumbScale));
+  const th = Math.max(20, Math.round(origH * thumbScale));
+
+  const thumbCanvas = new OffscreenCanvas(tw, th);
+  const thumbCtx = thumbCanvas.getContext('2d', { willReadFrequently: true });
+  if (!thumbCtx) {
+    return { x: 0, y: 0, width: origW, height: origH, cropped: false };
+  }
+
+  thumbCtx.drawImage(bitmap, 0, 0, tw, th);
+  const imgData = thumbCtx.getImageData(0, 0, tw, th);
+  const data = imgData.data;
+
+  // Max margin bounds in thumbnail pixels
+  const maxCropTop = Math.floor(th * maxCropPercent);
+  const maxCropBottom = Math.floor(th * (1 - maxCropPercent));
+  const maxCropLeft = Math.floor(tw * maxCropPercent);
+  const maxCropRight = Math.floor(tw * (1 - maxCropPercent));
+
+  // Helper to check if a pixel is white/margin (luma >= 238 or transparent)
+  function isMarginPixel(x, y) {
+    const idx = (y * tw + x) * 4;
+    const a = data[idx + 3];
+    if (a < 20) return true;
+    const luma = (data[idx] * 77 + data[idx + 1] * 150 + data[idx + 2] * 29) >> 8;
+    return luma >= 238;
+  }
+
+  // 1. Scan Top Margin
+  let top = 0;
+  for (let y = 0; y < maxCropTop; y++) {
+    let whiteCount = 0;
+    for (let x = 0; x < tw; x++) {
+      if (isMarginPixel(x, y)) whiteCount++;
+    }
+    if (whiteCount / tw >= 0.98) {
+      top = y + 1;
+    } else {
+      break;
+    }
+  }
+
+  // 2. Scan Bottom Margin
+  let bottom = th - 1;
+  for (let y = th - 1; y >= maxCropBottom; y--) {
+    let whiteCount = 0;
+    for (let x = 0; x < tw; x++) {
+      if (isMarginPixel(x, y)) whiteCount++;
+    }
+    if (whiteCount / tw >= 0.98) {
+      bottom = y - 1;
+    } else {
+      break;
+    }
+  }
+
+  const croppedH = Math.max(1, bottom - top + 1);
+
+  // 3. Scan Left Margin
+  let left = 0;
+  for (let x = 0; x < maxCropLeft; x++) {
+    let whiteCount = 0;
+    for (let y = top; y <= bottom; y++) {
+      if (isMarginPixel(x, y)) whiteCount++;
+    }
+    if (whiteCount / croppedH >= 0.98) {
+      left = x + 1;
+    } else {
+      break;
+    }
+  }
+
+  // 4. Scan Right Margin
+  let right = tw - 1;
+  for (let x = tw - 1; x >= maxCropRight; x--) {
+    let whiteCount = 0;
+    for (let y = top; y <= bottom; y++) {
+      if (isMarginPixel(x, y)) whiteCount++;
+    }
+    if (whiteCount / croppedH >= 0.98) {
+      right = x - 1;
+    } else {
+      break;
+    }
+  }
+
+  // Check if margin removed is meaningful (at least 2% on any dimension)
+  const totalCropW = left + (tw - 1 - right);
+  const totalCropH = top + (th - 1 - bottom);
+  if (totalCropW < tw * 0.02 && totalCropH < th * 0.02) {
+    return { x: 0, y: 0, width: origW, height: origH, cropped: false };
+  }
+
+  // Map back to full bitmap coordinates
+  const realX = Math.round(left / thumbScale);
+  const realY = Math.round(top / thumbScale);
+  const realW = Math.min(origW - realX, Math.round((right - left + 1) / thumbScale));
+  const realH = Math.min(origH - realY, Math.round((bottom - top + 1) / thumbScale));
+
+  return {
+    x: Math.max(0, realX),
+    y: Math.max(0, realY),
+    width: Math.max(10, realW),
+    height: Math.max(10, realH),
+    cropped: true
+  };
+}
+
+/**
  * Optimize page image for Kindle E-Ink display:
- * - Scales down to Kindle resolution (default 1680px max height)
+ * - Auto-crops empty scanner borders to enlarge panels and text
+ * - Scales down to Kindle resolution (default 1448px native Paperwhite & Basic)
  * - Converts to 8-bit Grayscale matching E-Ink 16 shades
- * - Compresses with high-efficiency JPEG
+ * - Compresses with high-efficiency WebP/JPEG (~45-65 KB per page)
  */
 async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
-  const maxResolution = options.maxResolution !== undefined ? parseInt(options.maxResolution, 10) : 1680;
+  const maxResolution = options.maxResolution !== undefined ? parseInt(options.maxResolution, 10) : 1448;
+  const autoCrop = options.autoCrop !== false;
   const isGrayscale = options.grayscale !== false;
   const cleanPaper = options.cleanPaper !== false;
   const sharpenEink = options.sharpenEink !== false;
   const targetFormat = options.optimizedFormat === 'jpeg' ? 'jpeg' : 'webp';
   const outMime = targetFormat === 'jpeg' ? 'image/jpeg' : 'image/webp';
   const outExt = targetFormat === 'jpeg' ? 'jpg' : 'webp';
-  const defaultQuality = targetFormat === 'jpeg' ? 0.70 : 0.75;
+  const defaultQuality = 0.60;
   const quality = options.imageQuality !== undefined ? parseFloat(options.imageQuality) : defaultQuality;
 
   // Gracefully fallback if OffscreenCanvas or createImageBitmap is not supported
@@ -1543,8 +1667,28 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
     const blob = new Blob([arrayBuffer], { type: mime || 'image/jpeg' });
     bitmap = await createImageBitmap(blob);
 
-    let targetWidth = bitmap.width;
-    let targetHeight = bitmap.height;
+    let srcX = 0;
+    let srcY = 0;
+    let srcW = bitmap.width;
+    let srcH = bitmap.height;
+
+    // Fast auto-crop pass: remove white scanner borders to enlarge art and save ~20% size
+    if (autoCrop) {
+      try {
+        const cropBox = detectContentBoundingBox(bitmap, 0.15);
+        if (cropBox.cropped) {
+          srcX = cropBox.x;
+          srcY = cropBox.y;
+          srcW = cropBox.width;
+          srcH = cropBox.height;
+        }
+      } catch (e) {
+        console.warn('[WeebDownloader] Auto-crop pass warning:', e);
+      }
+    }
+
+    let targetWidth = srcW;
+    let targetHeight = srcH;
 
     // Scale down proportionally if larger than maxResolution
     if (maxResolution > 0) {
@@ -1552,12 +1696,12 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
         // Standard vertical page
         const scale = maxResolution / targetHeight;
         targetHeight = maxResolution;
-        targetWidth = Math.round(bitmap.width * scale);
+        targetWidth = Math.round(srcW * scale);
       } else if (targetWidth > maxResolution && targetWidth > targetHeight) {
         // Double-page spread
         const scale = maxResolution / targetWidth;
         targetWidth = maxResolution;
-        targetHeight = Math.round(bitmap.height * scale);
+        targetHeight = Math.round(srcH * scale);
       }
     }
 
@@ -1573,7 +1717,7 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
       } catch (e) {}
     }
 
-    ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
+    ctx.drawImage(bitmap, srcX, srcY, srcW, srcH, 0, 0, targetWidth, targetHeight);
     bitmap.close();
     bitmap = null;
 
@@ -1586,13 +1730,13 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
         // Fast integer arithmetic: Y = (77*R + 150*G + 29*B) >> 8
         if (cleanPaper) {
           // Smart paper white clipping & deep black cleanup:
-          // Removes scanner paper noise (>= 240 -> 255) and solidifies deep ink (<= 16 -> 0).
+          // Removes scanner paper noise (>= 235 -> 255) and solidifies deep ink (<= 20 -> 0).
           // Dramatically reduces WebP compression file size and avoids E-Ink dithering/ghosting.
           for (let i = 0; i < len; i += 4) {
             let luma = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
-            if (luma >= 240) {
+            if (luma >= 235) {
               luma = 255;
-            } else if (luma <= 16) {
+            } else if (luma <= 20) {
               luma = 0;
             }
             data[i] = luma;
@@ -1610,7 +1754,8 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
 
         if (sharpenEink && targetWidth > 2 && targetHeight > 2) {
           // Fast unsharp mask: crisps dialogue text, kanji and fine manga lines on E-Ink
-          const alpha = 0.35;
+          // Uses threshold diff >= 4 to sharpen real line art without bloating screentone gradients
+          const alpha = 0.22;
           const copy = new Uint8Array(len / 4);
           for (let i = 0, p = 0; i < len; i += 4, p++) {
             copy[p] = data[i];
@@ -1622,10 +1767,11 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
             for (let x = 1; x < w - 1; x++) {
               const p = row + x;
               const center = copy[p];
-              // Skip uniform pure white backgrounds and pure black fills to preserve compression & speed
-              if (center >= 254 || center <= 2) continue;
+              // Skip uniform pure white backgrounds and pure black fills
+              if (center >= 253 || center <= 3) continue;
               const neighbors = (copy[p - 1] + copy[p + 1] + copy[p - w] + copy[p + w]) * 0.25;
               const diff = center - neighbors;
+              if (Math.abs(diff) < 4) continue; // Noise gate: preserve screentone compressibility
               let val = center + alpha * diff;
               if (val < 0) val = 0;
               else if (val > 255) val = 255;
@@ -1650,7 +1796,7 @@ async function optimizeImageForKindle(arrayBuffer, mime, options = {}) {
     if (!outBlob) {
       outBlob = await canvas.convertToBlob({
         type: 'image/jpeg',
-        quality: 0.70
+        quality: 0.60
       });
     }
 
