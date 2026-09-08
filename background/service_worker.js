@@ -633,14 +633,19 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
       const summaryXml = manga.description ? `  <Summary>${escapeXml(manga.description)}</Summary>\n` : '';
       const writerXml = manga.author ? `  <Writer>${escapeXml(manga.author)}</Writer>\n` : '';
       const artistXml = (manga.artist || manga.author) ? `  <Penciller>${escapeXml(manga.artist || manga.author)}</Penciller>\n` : '';
-      const genreXml = manga.genres ? `  <Genre>${escapeXml(manga.genres)}</Genre>\n` : '';
+      const genreXml = (manga.tags || manga.genres) ? `  <Genre>${escapeXml(manga.tags || manga.genres)}</Genre>\n` : '';
+      const formatXml = manga.type ? `  <Format>${escapeXml(manga.type)}</Format>\n` : '';
+      const yearXml = manga.released ? `  <Year>${escapeXml(manga.released)}</Year>\n` : '';
+      const ageRatingXml = manga.adultContent ? `  <AgeRating>${escapeXml(manga.adultContent === 'Yes' ? 'Adults Only 18+' : 'Teen')}</AgeRating>\n` : '';
 
       const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Title>${escapeXml(chapterTitle)}</Title>
   <Series>${escapeXml(manga.title)}</Series>
   <Number>${escapeXml(chapter.chapterNumber || String(chIdx + 1))}</Number>
-${summaryXml}${writerXml}${artistXml}${genreXml}  <PageCount>${pageImages.length}</PageCount>
+  <Volume>1</Volume>
+  <Count>${escapeXml(String(manga.totalChapters || totalChapters || ''))}</Count>
+${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}  <PageCount>${pageImages.length}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
   <LanguageISO>en</LanguageISO>
   <ScanInformation>WeebCentral Kindle Downloader</ScanInformation>
@@ -709,10 +714,22 @@ ${summaryXml}${writerXml}${artistXml}${genreXml}  <PageCount>${pageImages.length
       const chapterMeta = {
         title: chapterTitle || manga.title,
         series: manga.title,
+        series_index: chapter.chapterNumber || (chIdx + 1),
         authors: manga.author || manga.artist || '',
-        description: manga.description || '',
-        keywords: manga.genres || '',
-        language: 'en'
+        description: buildMangaPassport(manga, { chapterTitle }),
+        keywords: [manga.status, manga.type, manga.tags || manga.genres].filter(Boolean).join(', '),
+        language: 'en',
+        status: manga.status || 'Ongoing',
+        manga_type: manga.type || 'Manga',
+        chapters_count: `Глава ${chapter.chapterNumber || (chIdx + 1)}`,
+        total_chapters: manga.totalChapters ? String(manga.totalChapters) : '',
+        released: manga.released || '',
+        official_translation: manga.officialTranslation || '',
+        anime_adaptation: manga.animeAdaptation || '',
+        adult_content: manga.adultContent || '',
+        related_series: manga.relatedSeries || '',
+        source: 'WeebCentral',
+        device_profile: 'Kindle 11 (1236×1648)'
       };
 
       // If saving locally to PC, ensure local KOReader sidecar is generated with RTL manga order
@@ -1140,16 +1157,25 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
       `    <Page Image="${b.startPage || 0}" Bookmark="${escapeXml(b.title)}" Type="${b.key === 'cover' ? 'FrontCover' : 'Story'}" />`
     ).join('\n');
 
+    const volMatch = (localVolumePath || downloadState.targetFolder || '').match(/v(?:ol(?:ume)?)?[._\s-]*(\d+)/i);
+    const volumeNum = volMatch ? parseInt(volMatch[1], 10) : 1;
+    const totalVolumeChapters = accumulatedBookmarks.length ? (accumulatedBookmarks[0]?.key === 'cover' ? accumulatedBookmarks.length - 1 : accumulatedBookmarks.length) : chapters.length;
+
     const summaryXml = manga.description ? `  <Summary>${escapeXml(manga.description)}</Summary>\n` : '';
     const writerXml = manga.author ? `  <Writer>${escapeXml(manga.author)}</Writer>\n` : '';
     const artistXml = (manga.artist || manga.author) ? `  <Penciller>${escapeXml(manga.artist || manga.author)}</Penciller>\n` : '';
-    const genreXml = manga.genres ? `  <Genre>${escapeXml(manga.genres)}</Genre>\n` : '';
+    const genreXml = (manga.tags || manga.genres) ? `  <Genre>${escapeXml(manga.tags || manga.genres)}</Genre>\n` : '';
+    const formatXml = manga.type ? `  <Format>${escapeXml(manga.type)}</Format>\n` : '';
+    const yearXml = manga.released ? `  <Year>${escapeXml(manga.released)}</Year>\n` : '';
+    const ageRatingXml = manga.adultContent ? `  <AgeRating>${escapeXml(manga.adultContent === 'Yes' ? 'Adults Only 18+' : 'Teen')}</AgeRating>\n` : '';
 
     const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Title>${escapeXml(manga.title)}</Title>
   <Series>${escapeXml(manga.title)}</Series>
-${summaryXml}${writerXml}${artistXml}${genreXml}  <PageCount>${globalPageCounter}</PageCount>
+  <Volume>${volumeNum}</Volume>
+  <Count>${escapeXml(String(manga.totalChapters || totalToDownload || ''))}</Count>
+${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}  <PageCount>${globalPageCounter}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
   <LanguageISO>en</LanguageISO>
   <ScanInformation>WeebCentral Kindle Downloader</ScanInformation>
@@ -1232,10 +1258,22 @@ ${navPointsXml}
         metadata: {
           title: manga.title,
           series: manga.title,
+          series_index: volumeNum,
           authors: manga.author || manga.artist || '',
-          description: manga.description || '',
-          keywords: manga.genres || '',
-          language: 'en'
+          description: buildMangaPassport(manga, { chaptersInVolume: `${totalVolumeChapters}` }),
+          keywords: [manga.status, manga.type, manga.tags || manga.genres].filter(Boolean).join(', '),
+          language: 'en',
+          status: manga.status || 'Ongoing',
+          manga_type: manga.type || 'Manga',
+          chapters_count: `${totalVolumeChapters} глав`,
+          total_chapters: manga.totalChapters ? String(manga.totalChapters) : '',
+          released: manga.released || '',
+          official_translation: manga.officialTranslation || '',
+          anime_adaptation: manga.animeAdaptation || '',
+          adult_content: manga.adultContent || '',
+          related_series: manga.relatedSeries || '',
+          source: 'WeebCentral',
+          device_profile: 'Kindle 11 (1236×1648)'
         }
       });
 
@@ -2299,11 +2337,47 @@ function unescapeXml(safe) {
 }
 
 /**
- * Fetch series metadata (synopsis, author, genres) from WeebCentral if missing
+ * Format a rich, structured visual manga passport for KOReader TextViewer
+ */
+function buildMangaPassport(manga, extra = {}) {
+  const lines = [];
+  const title = (manga.title || 'Manga').trim();
+  lines.push(`╔══════════════════════════════════════════════════════════╗`);
+  lines.push(`║ ${title.toUpperCase().padEnd(56, ' ')} ║`);
+  lines.push(`╚══════════════════════════════════════════════════════════╝`);
+
+  if (manga.author) lines.push(`• Автор(ы): ${manga.author}`);
+  if (manga.type) lines.push(`• Тип: ${manga.type}`);
+  if (manga.status) lines.push(`• Статус: ${manga.status}`);
+  if (extra.chaptersInVolume) {
+    const totalSite = manga.totalChapters ? ` (из ${manga.totalChapters} на сайте)` : '';
+    lines.push(`• Глав в томе: ${extra.chaptersInVolume}${totalSite}`);
+  } else if (extra.chapterTitle) {
+    lines.push(`• Глава: ${extra.chapterTitle}`);
+  } else if (manga.totalChapters) {
+    lines.push(`• Всего глав: ${manga.totalChapters}`);
+  }
+  if (manga.released) lines.push(`• Год релиза: ${manga.released}`);
+  if (manga.officialTranslation) lines.push(`• Официальный перевод: ${manga.officialTranslation}`);
+  if (manga.animeAdaptation) lines.push(`• Аниме-адаптация: ${manga.animeAdaptation}`);
+  if (manga.adultContent) lines.push(`• 18+ Контент: ${manga.adultContent}`);
+  if (manga.relatedSeries) lines.push(`• Связанные серии: ${manga.relatedSeries}`);
+  const tags = manga.tags || manga.genres;
+  if (tags) lines.push(`• Теги: ${tags}`);
+  lines.push(`• Источник: WeebCentral`);
+  lines.push(`• Ридер: Kindle 11 (1236×1648, RTL Manga)`);
+  lines.push(`──────────────────────────────────────────────────────────`);
+  lines.push(`СИНОПСИС:`);
+  lines.push(manga.description ? manga.description.trim() : 'Описание отсутствует.');
+  return lines.join('\n');
+}
+
+/**
+ * Fetch series metadata (synopsis, author, genres, type, status, year, etc.) from WeebCentral if missing
  */
 async function enrichMangaMetadata(manga) {
   if (!manga || !manga.seriesId) return manga;
-  if (manga.author && manga.description && manga.genres) return manga;
+  if (manga.author && manga.description && manga.tags && manga.status && manga.type && manga.released) return manga;
 
   try {
     const seriesUrl = `https://weebcentral.com/series/${manga.seriesId}`;
@@ -2315,12 +2389,21 @@ async function enrichMangaMetadata(manga) {
     });
     if (resp.ok) {
       const html = await resp.text();
+
+      // Description
       if (!manga.description) {
         const ogMatch = html.match(/<meta\s+property=["']og:description["']\s+content=["']([^"']+)["']/i);
         if (ogMatch && ogMatch[1]) {
           manga.description = unescapeXml(ogMatch[1]).trim();
+        } else {
+          const descMatch = html.match(/<strong>Description<\/strong>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/i);
+          if (descMatch && descMatch[1]) {
+            manga.description = unescapeXml(descMatch[1].replace(/<[^>]+>/g, '').trim());
+          }
         }
       }
+
+      // Author
       if (!manga.author) {
         const authorMatches = [...html.matchAll(/href=["'][^"']*(?:author=|(?:\/author\/))[^"']*["'][^>]*>([^<]+)<\/a>/gi)];
         if (authorMatches.length > 0) {
@@ -2329,11 +2412,87 @@ async function enrichMangaMetadata(manga) {
           manga.artist = manga.artist || manga.author;
         }
       }
-      if (!manga.genres) {
-        const genreMatches = [...html.matchAll(/href=["'][^"']*(?:genre=|tag=|(?:\/genre\/)|(?:\/tag\/))[^"']*["'][^>]*>([^<]+)<\/a>/gi)];
-        if (genreMatches.length > 0) {
-          const genres = genreMatches.map(m => unescapeXml(m[1]).trim()).filter(Boolean);
-          manga.genres = Array.from(new Set(genres)).join(', ');
+
+      // Tags / Genres
+      if (!manga.tags && !manga.genres) {
+        const tagMatches = [...html.matchAll(/href=["'][^"']*(?:tag=|genre=|(?:\/tag\/)|(?:\/genre\/))[^"']*["'][^>]*>([^<]+)<\/a>/gi)];
+        if (tagMatches.length > 0) {
+          const tags = tagMatches.map(m => unescapeXml(m[1]).trim()).filter(Boolean);
+          manga.tags = Array.from(new Set(tags)).join(', ');
+          manga.genres = manga.tags;
+        }
+      }
+
+      // Type (Manga, Manhwa, Manhua)
+      if (!manga.type) {
+        const typeMatch = html.match(/<strong>Type<\/strong>[\s\S]*?<a[^>]*>([^<]+)<\/a>/i)
+          || html.match(/<strong>Type<\/strong>[\s\S]*?:\s*([A-Za-z]+)/i);
+        if (typeMatch && typeMatch[1]) {
+          manga.type = unescapeXml(typeMatch[1]).trim();
+        }
+      }
+
+      // Status (Ongoing, Completed)
+      if (!manga.status || manga.status === 'Ongoing') {
+        const statusMatch = html.match(/<strong>Status<\/strong>[\s\S]*?<a[^>]*>([^<]+)<\/a>/i)
+          || html.match(/<strong>Status<\/strong>[\s\S]*?:\s*([A-Za-z]+)/i);
+        if (statusMatch && statusMatch[1]) {
+          manga.status = unescapeXml(statusMatch[1]).trim();
+        }
+      }
+
+      // Released (Year)
+      if (!manga.released) {
+        const relMatch = html.match(/<strong>Released<\/strong>[\s\S]*?([12][0-9]{3})/i);
+        if (relMatch && relMatch[1]) {
+          manga.released = relMatch[1].trim();
+        }
+      }
+
+      // Official Translation
+      if (!manga.officialTranslation) {
+        const otMatch = html.match(/<strong>Official Translation<\/strong>[\s\S]*?:\s*([A-Za-z]+)/i)
+          || html.match(/<strong>Official Translation<\/strong>[\s\S]*?<[^>]+>([^<]+)<\/[^>]+>/i);
+        if (otMatch && otMatch[1]) {
+          manga.officialTranslation = unescapeXml(otMatch[1]).trim();
+        }
+      }
+
+      // Anime Adaptation
+      if (!manga.animeAdaptation) {
+        const animeMatch = html.match(/<strong>Anime Adaptation<\/strong>[\s\S]*?:\s*([A-Za-z]+)/i)
+          || html.match(/<strong>Anime Adaptation<\/strong>[\s\S]*?<[^>]+>([^<]+)<\/[^>]+>/i);
+        if (animeMatch && animeMatch[1]) {
+          manga.animeAdaptation = unescapeXml(animeMatch[1]).trim();
+        }
+      }
+
+      // Adult Content
+      if (!manga.adultContent) {
+        const adultMatch = html.match(/<strong>Adult Content<\/strong>[\s\S]*?:\s*([A-Za-z]+)/i)
+          || html.match(/<strong>Adult Content<\/strong>[\s\S]*?<[^>]+>([^<]+)<\/[^>]+>/i);
+        if (adultMatch && adultMatch[1]) {
+          manga.adultContent = unescapeXml(adultMatch[1]).trim();
+        }
+      }
+
+      // Related Series
+      if (!manga.relatedSeries) {
+        const relBlockMatch = html.match(/<strong>Related Series<\/strong>[\s\S]*?<ul[^>]*>([\s\S]*?)<\/ul>/i);
+        if (relBlockMatch && relBlockMatch[1]) {
+          const relItems = [];
+          const itemMatches = [...relBlockMatch[1].matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)];
+          for (const im of itemMatches) {
+            const aM = im[1].match(/<a[^>]*>([^<]+)<\/a>/i);
+            const spanM = im[1].match(/<span[^>]*>([^<]+)<\/span>/i);
+            if (aM && aM[1]) {
+              const rel = spanM && spanM[1] ? ` (${spanM[1].trim()})` : '';
+              relItems.push(`${unescapeXml(aM[1]).trim()}${rel}`);
+            }
+          }
+          if (relItems.length > 0) {
+            manga.relatedSeries = relItems.join(', ');
+          }
         }
       }
     }

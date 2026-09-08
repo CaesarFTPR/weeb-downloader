@@ -1,6 +1,6 @@
 --[[
   merge_volume.lua
-  -- version: 3.3.0
+  -- version: 3.4.0
   True In-Place Binary CBZ Volume Merger for Kindle KOReader using native LuaJIT & libc.
   Time Complexity: O(delta) - appends new chapters in ~0.15s without rewriting existing chapters.
 
@@ -178,43 +178,82 @@ local function update_koreader_metadata(target_cbz, pages)
     data["inverse_reading_order"] = true
 
     -- 2. Extract metadata from ComicInfo.xml inside target_cbz if present
-    local xml_cmd = string.format("unzip -p %q ComicInfo.xml 2>/dev/null || busybox unzip -p %q ComicInfo.xml 2>/dev/null", target_cbz, target_cbz)
+    local xml_cmd = string.format("unzip -p %q ComicInfo.xml 2>/dev/null || unzip -p %q comicinfo.xml 2>/dev/null || busybox unzip -p %q ComicInfo.xml 2>/dev/null || busybox unzip -p %q comicinfo.xml 2>/dev/null", target_cbz, target_cbz, target_cbz, target_cbz)
     local p = io.popen(xml_cmd)
+    local function unescape_xml(s)
+        if not s then return nil end
+        s = s:gsub("&amp;", "&")
+        s = s:gsub("&lt;", "<")
+        s = s:gsub("&gt;", ">")
+        s = s:gsub("&quot;", '"')
+        s = s:gsub("&apos;", "'")
+        local trimmed = s:match("^%s*(.-)%s*$")
+        return (#trimmed > 0) and trimmed or nil
+    end
+
+    data["doc_props"] = data["doc_props"] or {}
+
     if p then
         local xml = p:read("*a")
         p:close()
         if xml and #xml > 0 then
-            local function unescape_xml(s)
-                if not s then return "" end
-                s = s:gsub("&amp;", "&")
-                s = s:gsub("&lt;", "<")
-                s = s:gsub("&gt;", ">")
-                s = s:gsub("&quot;", '"')
-                s = s:gsub("&apos;", "'")
-                return s:match("^%s*(.-)%s*$")
-            end
-
             local title = unescape_xml(xml:match("<Title>(.-)</Title>") or xml:match("<Series>(.-)</Series>"))
             local series = unescape_xml(xml:match("<Series>(.-)</Series>") or xml:match("<Title>(.-)</Title>"))
             local writer = unescape_xml(xml:match("<Writer>(.-)</Writer>") or xml:match("<Penciller>(.-)</Penciller>"))
             local summary = unescape_xml(xml:match("<Summary>(.-)</Summary>"))
             local genre = unescape_xml(xml:match("<Genre>(.-)</Genre>"))
+            local volume = unescape_xml(xml:match("<Volume>(.-)</Volume>"))
+            local number = unescape_xml(xml:match("<Number>(.-)</Number>"))
+            local count = unescape_xml(xml:match("<Count>(.-)</Count>"))
+            local fmt = unescape_xml(xml:match("<Format>(.-)</Format>"))
+            local year = unescape_xml(xml:match("<Year>(.-)</Year>"))
+            local age_rating = unescape_xml(xml:match("<AgeRating>(.-)</AgeRating>"))
+            local scan_info = unescape_xml(xml:match("<ScanInformation>(.-)</ScanInformation>"))
 
-            data["doc_props"] = data["doc_props"] or {}
-            if title and #title > 0 then
+            if title then
                 data["doc_props"]["title"] = title
                 data["doc_props"]["display_title"] = title
             end
-            if series and #series > 0 then data["doc_props"]["series"] = series end
-            if writer and #writer > 0 then data["doc_props"]["authors"] = writer end
-            if summary and #summary > 0 then data["doc_props"]["description"] = summary end
-            if genre and #genre > 0 then data["doc_props"]["keywords"] = genre end
+            if series then data["doc_props"]["series"] = series end
+            if writer then data["doc_props"]["authors"] = writer end
+            if summary then data["doc_props"]["description"] = summary end
+            if genre then data["doc_props"]["keywords"] = genre end
+            if volume and tonumber(volume) then
+                data["doc_props"]["series_index"] = tonumber(volume)
+            elseif number and tonumber(number) then
+                data["doc_props"]["series_index"] = tonumber(number)
+            end
+            if count then data["doc_props"]["total_chapters"] = count end
+            if fmt then data["doc_props"]["manga_type"] = fmt end
+            if year then data["doc_props"]["released"] = year end
+            if age_rating then
+                data["doc_props"]["adult_content"] = (age_rating:find("18") or age_rating:lower():find("adult")) and "Yes" or "No"
+            end
+            if scan_info then data["doc_props"]["source"] = scan_info end
             data["doc_props"]["language"] = "en"
+            data["doc_props"]["device_profile"] = "Kindle 11 (1236×1648)"
+        end
+    end
+
+    -- Fallback title/series from filename if missing
+    local stem_name = target_cbz:match("([^/]+)%.%w+$") or target_cbz
+    if not data["doc_props"]["title"] then
+        data["doc_props"]["title"] = stem_name
+        data["doc_props"]["display_title"] = stem_name
+    end
+    if not data["doc_props"]["series"] then
+        data["doc_props"]["series"] = stem_name
+    end
+    if not data["doc_props"]["series_index"] then
+        local vol_num = stem_name:match("v(?:ol(?:ume)?)?[._%s-]*0*(%d+)")
+        if vol_num and tonumber(vol_num) then
+            data["doc_props"]["series_index"] = tonumber(vol_num)
+        else
+            data["doc_props"]["series_index"] = 1
         end
     end
 
     if pages and pages > 0 then
-        data["doc_props"] = data["doc_props"] or {}
         data["doc_props"]["pages"] = pages
     end
 
@@ -329,6 +368,14 @@ if arg[1] == "--inspect" then
     -- Read KOReader .sdr metadata for live reading progress
     local reading_progress = nil
     local sdr_dir = target_cbz:gsub("%.%w+$", ".sdr")
+
+    -- Auto-heal KOReader custom metadata sidecar if missing on Kindle
+    local f_custom_check = io.open(sdr_dir .. "/custom_metadata.lua", "r")
+    if f_custom_check then
+        f_custom_check:close()
+    else
+        update_koreader_metadata(target_cbz, image_count)
+    end
     local meta_candidates = {
         sdr_dir .. "/metadata.cbz.lua",
         sdr_dir .. "/metadata.zip.lua"

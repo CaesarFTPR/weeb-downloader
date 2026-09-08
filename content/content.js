@@ -91,39 +91,125 @@ async function getMangaInfo() {
     }
   }
 
-  // Additional metadata for ComicInfo.xml
-  let description = '';
-  const ogDesc = document.querySelector('meta[property="og:description"]');
-  if (ogDesc && ogDesc.content) {
-    description = ogDesc.content.trim();
-  }
-  if (!description) {
-    const descEl = document.querySelector('section[x-data] p, article p, [x-show*="description"]');
-    if (descEl) description = descEl.textContent.trim();
+  // Helper to extract detailed metadata from WeebCentral series page DOM
+  function parseWeebCentralDetails(rootDoc) {
+    const details = {
+      author: '',
+      tags: '',
+      type: 'Manga',
+      status: 'Ongoing',
+      released: '',
+      officialTranslation: '',
+      animeAdaptation: '',
+      adultContent: '',
+      relatedSeries: '',
+      description: '',
+      coverUrl: ''
+    };
+    if (!rootDoc) return details;
+
+    const coverEl = rootDoc.querySelector('section[x-data] img, article img, img[alt*="Cover"]');
+    if (coverEl) {
+      details.coverUrl = coverEl.src || coverEl.getAttribute('srcset') || '';
+    }
+
+    const listItems = Array.from(rootDoc.querySelectorAll('section[x-data] li, ul li, li'));
+    for (const li of listItems) {
+      const strong = li.querySelector('strong');
+      if (!strong) continue;
+      const label = strong.textContent.trim().toLowerCase();
+
+      if (label.includes('author')) {
+        const links = li.querySelectorAll('a');
+        if (links.length > 0) {
+          details.author = Array.from(links).map(a => a.textContent.trim()).filter(Boolean).join(', ');
+        } else {
+          details.author = li.textContent.replace(strong.textContent, '').trim();
+        }
+      } else if (label.includes('tag')) {
+        const links = li.querySelectorAll('a');
+        if (links.length > 0) {
+          details.tags = Array.from(links).map(a => a.textContent.trim()).filter(Boolean).join(', ');
+        }
+      } else if (label.includes('type')) {
+        const links = li.querySelectorAll('a');
+        if (links.length > 0) {
+          details.type = Array.from(links).map(a => a.textContent.trim()).filter(Boolean).join(', ');
+        } else {
+          details.type = li.textContent.replace(strong.textContent, '').trim();
+        }
+      } else if (label.includes('status')) {
+        const links = li.querySelectorAll('a');
+        const val = links.length > 0 ? links[0].textContent.trim() : li.textContent.replace(strong.textContent, '').trim();
+        if (val) details.status = val;
+      } else if (label.includes('released')) {
+        const val = li.textContent.replace(strong.textContent, '').trim();
+        if (val) details.released = val;
+      } else if (label.includes('official translation')) {
+        const val = li.textContent.replace(strong.textContent, '').trim();
+        if (val) details.officialTranslation = val;
+      } else if (label.includes('anime adaptation')) {
+        const val = li.textContent.replace(strong.textContent, '').trim();
+        if (val) details.animeAdaptation = val;
+      } else if (label.includes('adult content')) {
+        const val = li.textContent.replace(strong.textContent, '').trim();
+        if (val) details.adultContent = val;
+      } else if (label.includes('related series')) {
+        const subLis = li.querySelectorAll('li');
+        const relItems = [];
+        if (subLis.length > 0) {
+          subLis.forEach(sub => {
+            const a = sub.querySelector('a');
+            const span = sub.querySelector('span');
+            if (a) {
+              const rel = span ? ` (${span.textContent.trim()})` : '';
+              relItems.push(`${a.textContent.trim()}${rel}`);
+            }
+          });
+        } else {
+          const aList = li.querySelectorAll('a');
+          aList.forEach(a => relItems.push(a.textContent.trim()));
+        }
+        if (relItems.length > 0) {
+          details.relatedSeries = relItems.join(', ');
+        }
+      } else if (label.includes('description')) {
+        const p = li.querySelector('p');
+        if (p) details.description = p.textContent.trim();
+      }
+    }
+
+    if (!details.description) {
+      const ogDesc = rootDoc.querySelector('meta[property="og:description"]');
+      if (ogDesc && ogDesc.content) details.description = ogDesc.content.trim();
+      if (!details.description) {
+        const descEl = rootDoc.querySelector('section[x-data] p, article p, [x-show*="description"]');
+        if (descEl) details.description = descEl.textContent.trim();
+      }
+    }
+
+    if (!details.author) {
+      const authorLinks = rootDoc.querySelectorAll('a[href*="author="], a[href*="/author/"]');
+      if (authorLinks.length > 0) {
+        details.author = Array.from(authorLinks).map(a => a.textContent.trim()).filter(Boolean).join(', ');
+      }
+    }
+
+    if (!details.tags) {
+      const genreLinks = rootDoc.querySelectorAll('a[href*="genre="], a[href*="/genre/"], a[href*="/tag/"]');
+      if (genreLinks.length > 0) {
+        details.tags = Array.from(genreLinks).map(a => a.textContent.trim()).filter(Boolean).join(', ');
+      }
+    }
+
+    return details;
   }
 
-  // Author and Artist
-  let author = '';
-  const authorLinks = document.querySelectorAll('a[href*="author="], a[href*="/author/"]');
-  if (authorLinks.length > 0) {
-    author = Array.from(authorLinks).map(a => a.textContent.trim()).filter(Boolean).join(', ');
-  }
+  // Parse details from current page
+  let details = parseWeebCentralDetails(document);
 
-  // Genres
-  const genreLinks = document.querySelectorAll('a[href*="genre="], a[href*="/genre/"], a[href*="/tag/"]');
-  const genres = Array.from(genreLinks).map(a => a.textContent.trim()).filter(Boolean);
-
-  // Status (Ongoing / Completed)
-  let status = 'Ongoing';
-  const statusEl = document.querySelector('[class*="status"], a[href*="status="]');
-  if (statusEl) {
-    const txt = statusEl.textContent.trim();
-    if (/completed/i.test(txt)) status = 'Completed';
-    else if (/ongoing/i.test(txt)) status = 'Ongoing';
-  }
-
-  // If author, description, genres or cover are missing (e.g. on /chapters/... page), fetch series page
-  if ((!author || !description || genres.length === 0 || !coverUrl) && seriesId) {
+  // If on chapter page or details are incomplete, fetch the full series page
+  if ((!details.author || !details.description || !details.tags || !details.coverUrl || isChapter) && seriesId) {
     try {
       const seriesPageResp = await fetch(`https://weebcentral.com/series/${seriesId}`);
       if (seriesPageResp.ok) {
@@ -135,38 +221,10 @@ async function getMangaInfo() {
           if (sh1) title = sh1.textContent.trim();
         }
 
-        if (!coverUrl) {
-          const scoverEl = sDoc.querySelector('section[x-data] img, article img, img[alt*="Cover"]');
-          if (scoverEl) coverUrl = scoverEl.src || scoverEl.getAttribute('srcset') || '';
-        }
-
-        if (!description) {
-          const sogDesc = sDoc.querySelector('meta[property="og:description"]');
-          if (sogDesc && sogDesc.content) description = sogDesc.content.trim();
-          if (!description) {
-            const sdescEl = sDoc.querySelector('section[x-data] p, article p, [x-show*="description"]');
-            if (sdescEl) description = sdescEl.textContent.trim();
-          }
-        }
-
-        if (!author) {
-          const sauthorLinks = sDoc.querySelectorAll('a[href*="author="], a[href*="/author/"]');
-          if (sauthorLinks.length > 0) {
-            author = Array.from(sauthorLinks).map(a => a.textContent.trim()).filter(Boolean).join(', ');
-          }
-        }
-
-        if (genres.length === 0) {
-          const sgenreLinks = sDoc.querySelectorAll('a[href*="genre="], a[href*="/genre/"], a[href*="/tag/"]');
-          genres = Array.from(sgenreLinks).map(a => a.textContent.trim()).filter(Boolean);
-        }
-
-        if (status === 'Ongoing') {
-          const sstatusEl = sDoc.querySelector('[class*="status"], a[href*="status="]');
-          if (sstatusEl) {
-            const stxt = sstatusEl.textContent.trim();
-            if (/completed/i.test(stxt)) status = 'Completed';
-            else if (/ongoing/i.test(stxt)) status = 'Ongoing';
+        const fetchedDetails = parseWeebCentralDetails(sDoc);
+        for (const [k, v] of Object.entries(fetchedDetails)) {
+          if (v && (!details[k] || details[k] === 'Manga' || details[k] === 'Ongoing')) {
+            details[k] = v;
           }
         }
       }
@@ -182,12 +240,20 @@ async function getMangaInfo() {
     title: safeTitle || 'Manga',
     originalTitle: title,
     seriesId,
-    coverUrl,
-    description: description || '',
-    author: author || '',
-    artist: author || '',
-    genres: genres.join(', '),
-    status: status || 'Ongoing',
+    coverUrl: details.coverUrl || coverUrl,
+    description: details.description || '',
+    author: details.author || '',
+    artist: details.author || '',
+    genres: details.tags || '',
+    tags: details.tags || '',
+    type: details.type || 'Manga',
+    status: details.status || 'Ongoing',
+    released: details.released || '',
+    officialTranslation: details.officialTranslation || '',
+    animeAdaptation: details.animeAdaptation || '',
+    adultContent: details.adultContent || '',
+    relatedSeries: details.relatedSeries || '',
+    totalChapters: 0,
     currentUrl: url,
     isSeries,
     isChapter

@@ -736,9 +736,17 @@ async function toggleMangaSavedState(seriesId) {
       author: source.author || '',
       artist: source.artist || source.author || '',
       description: source.description || '',
-      genres: source.genres || '',
+      genres: source.genres || source.tags || '',
+      tags: source.tags || source.genres || '',
+      type: source.type || 'Manga',
       status: source.status || 'Ongoing',
+      released: source.released || '',
+      officialTranslation: source.officialTranslation || '',
+      animeAdaptation: source.animeAdaptation || '',
+      adultContent: source.adultContent || '',
+      relatedSeries: source.relatedSeries || '',
       chapterCount: (source.chapters && source.chapters.length) || source.chapterCount || 0,
+      totalChapters: (source.chapters && source.chapters.length) || source.totalChapters || 0,
       chapters: source.chapters || [],
       savedAt: Date.now()
     };
@@ -948,8 +956,16 @@ async function switchToSavedManga(seriesId, silent = false) {
     author: target.author || '',
     artist: target.artist || target.author || '',
     description: target.description || '',
-    genres: target.genres || '',
-    status: target.status || 'Ongoing'
+    genres: target.genres || target.tags || '',
+    tags: target.tags || target.genres || '',
+    type: target.type || 'Manga',
+    status: target.status || 'Ongoing',
+    released: target.released || '',
+    officialTranslation: target.officialTranslation || '',
+    animeAdaptation: target.animeAdaptation || '',
+    adultContent: target.adultContent || '',
+    relatedSeries: target.relatedSeries || '',
+    totalChapters: (target.chapters && target.chapters.length) || target.totalChapters || 0
   };
 
   elements.mangaTitle.textContent = currentManga.title;
@@ -1403,6 +1419,7 @@ async function loadMangaAndChapters(tabId) {
   }
 
   allChapters = chaptersRes.data;
+  currentManga.totalChapters = allChapters.length;
   browserTabManga = currentManga;
   browserTabChapters = allChapters;
   if (browserTabManga && browserTabManga.seriesId) {

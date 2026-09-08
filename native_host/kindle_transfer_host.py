@@ -336,11 +336,26 @@ def extract_metadata_from_cbz(cbz_path):
                     writer = root.findtext('Writer') or root.findtext('Penciller')
                     summary = root.findtext('Summary')
                     genre = root.findtext('Genre')
+                    volume = root.findtext('Volume')
+                    number = root.findtext('Number')
+                    count = root.findtext('Count')
+                    fmt = root.findtext('Format')
+                    year = root.findtext('Year')
+                    age_rating = root.findtext('AgeRating')
+                    scan_info = root.findtext('ScanInformation')
+
                     if title: meta['title'] = html.unescape(title).strip()
                     if series: meta['series'] = html.unescape(series).strip()
                     if writer: meta['authors'] = html.unescape(writer).strip()
                     if summary: meta['description'] = html.unescape(summary).strip()
                     if genre: meta['keywords'] = html.unescape(genre).strip()
+                    if volume: meta['series_index'] = int(volume) if volume.isdigit() else volume
+                    elif number: meta['series_index'] = int(number) if number.isdigit() else number
+                    if count: meta['total_chapters'] = count.strip()
+                    if fmt: meta['manga_type'] = fmt.strip()
+                    if year: meta['released'] = year.strip()
+                    if age_rating: meta['adult_content'] = 'Yes' if ('18' in age_rating or 'adult' in age_rating.lower()) else 'No'
+                    if scan_info: meta['source'] = scan_info.strip()
                 except Exception as e:
                     log_debug(f"XML parse error in {cbz_path}: {e}")
     except Exception as e:
@@ -379,6 +394,7 @@ def ensure_koreader_sidecar_local(cbz_path, metadata=None):
     <book_path_without_ext>.sdr/metadata.cbz.lua and metadata.zip.lua
     - Enforces inverse_reading_order = true (RTL manga mode)
     - Sets doc_props (title, display_title, series, authors, description, keywords, language, pages)
+    - Sets custom_props (status, manga_type, chapters_count, total_chapters, released, etc.)
     - Preserves existing reading progress (last_page, percent_finished, bookmarks, etc.)
     """
     if not cbz_path or not os.path.exists(cbz_path) or not os.path.isfile(cbz_path):
@@ -391,10 +407,13 @@ def ensure_koreader_sidecar_local(cbz_path, metadata=None):
 
     extracted = extract_metadata_from_cbz(cbz_path)
     if metadata and isinstance(metadata, dict):
-        for k in ('title', 'series', 'authors', 'description', 'keywords', 'language'):
+        for k in ('title', 'series', 'series_index', 'authors', 'description', 'keywords', 'language',
+                  'status', 'manga_type', 'chapters_count', 'total_chapters', 'released',
+                  'official_translation', 'anime_adaptation', 'adult_content', 'related_series',
+                  'source', 'device_profile'):
             v = metadata.get(k)
-            if v:
-                extracted[k] = str(v).strip()
+            if v is not None and str(v).strip() != '':
+                extracted[k] = v if isinstance(v, (int, float, bool)) else str(v).strip()
 
     existing_text = ""
     target_meta_file = meta_cbz if os.path.exists(meta_cbz) else (meta_zip if os.path.exists(meta_zip) else None)
@@ -428,12 +447,11 @@ def ensure_koreader_sidecar_local(cbz_path, metadata=None):
             "language": extracted.get('language') or "en"
         }
     }
-    if extracted.get('authors'):
-        data["doc_props"]["authors"] = extracted['authors']
-    if extracted.get('description'):
-        data["doc_props"]["description"] = extracted['description']
-    if extracted.get('keywords'):
-        data["doc_props"]["keywords"] = extracted['keywords']
+    for k in ('authors', 'description', 'keywords', 'series_index', 'status', 'manga_type',
+              'chapters_count', 'total_chapters', 'released', 'official_translation',
+              'anime_adaptation', 'adult_content', 'related_series', 'source', 'device_profile'):
+        if k in extracted and extracted[k]:
+            data["doc_props"][k] = extracted[k]
     if extracted.get('pages', 0) > 0:
         data["doc_props"]["pages"] = extracted['pages']
 
@@ -1000,15 +1018,15 @@ def inspect_volume(volume_path):
     except Exception as e:
         return {'status': 'error', 'message': f'Failed to inspect volume: {str(e)}'}
 
-def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
+def ensure_koreader_manga_patch(host, port, user, password=None, key_path=None):
     """
-    Ensure /mnt/us/koreader/merge_volume.lua exists and is up to date on Kindle.
-    Deploys it via SCP if missing or outdated.
+    Ensure /mnt/us/koreader/patches/2-manga-bookinfo.lua is deployed to Kindle.
+    Enables native custom manga metadata rows (Status, Chapters, Source, Device) in KOReader.
     """
     ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
     scp_bin = shutil.which('scp') or '/usr/bin/scp'
-    lua_local = os.path.join(os.path.dirname(__file__), 'merge_volume.lua')
-    if not os.path.exists(lua_local):
+    patch_local = os.path.join(os.path.dirname(__file__), '2-manga-bookinfo.lua')
+    if not os.path.exists(patch_local):
         return False
 
     check_cmd = [
@@ -1017,7 +1035,57 @@ def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        "if grep -q -- 'version: 3.3.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+        "if [ -f /mnt/us/koreader/patches/2-manga-bookinfo.lua ]; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+    ]
+    check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
+    if not check_res or check_res.returncode != 0:
+        return False
+
+    if 'OK' not in check_res.stdout:
+        mkdir_cmd = [
+            ssh_bin,
+            '-o', 'ConnectTimeout=4',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-p', str(port),
+            f'{user}@{host}',
+            "mkdir -p /mnt/us/koreader/patches 2>/dev/null || true"
+        ]
+        execute_with_auth(mkdir_cmd, password=password, key_path=key_path, timeout=5)
+        auth_flags = [
+            '-o', 'ConnectTimeout=5',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-P', str(port)
+        ]
+        deploy_cmd = [scp_bin] + auth_flags + [patch_local, f'{user}@{host}:/mnt/us/koreader/patches/2-manga-bookinfo.lua']
+        deploy_res = execute_with_auth(deploy_cmd, password=password, key_path=key_path, timeout=10)
+        return bool(deploy_res and deploy_res.returncode == 0)
+
+    return True
+
+def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
+    """
+    Ensure /mnt/us/koreader/merge_volume.lua exists and is up to date on Kindle (v3.4.0).
+    Deploys it via SCP if missing or outdated. Also ensures 2-manga-bookinfo.lua user patch.
+    """
+    ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
+    scp_bin = shutil.which('scp') or '/usr/bin/scp'
+    lua_local = os.path.join(os.path.dirname(__file__), 'merge_volume.lua')
+    if not os.path.exists(lua_local):
+        return False
+
+    # Also deploy KOReader user patch
+    try:
+        ensure_koreader_manga_patch(host, port, user, password=password, key_path=key_path)
+    except Exception as e:
+        log_debug(f"ensure_koreader_manga_patch note: {e}")
+
+    check_cmd = [
+        ssh_bin,
+        '-o', 'ConnectTimeout=4',
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-p', str(port),
+        f'{user}@{host}',
+        "if grep -q -- 'version: 3.4.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
     ]
     check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
     if not check_res or check_res.returncode != 0:
