@@ -134,6 +134,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.action === 'CHECK_ONGOING_UPDATES') {
+    checkOngoingMangaUpdates()
+      .then(res => sendResponse({ success: true, updates: res }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
   if (request.action === 'SET_KINDLE_KEEP_AWAKE') {
     sendNativeMessage({
       action: 'set_kindle_keep_awake',
@@ -620,13 +627,20 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
 
       // ComicInfo.xml metadata for KOReader (series, title, right-to-left manga mode, bookmark)
       const chapterTitle = chapter.name || `Chapter ${chapter.chapterNumber || (chIdx + 1)}`;
+      const summaryXml = manga.description ? `  <Summary>${escapeXml(manga.description)}</Summary>\n` : '';
+      const writerXml = manga.author ? `  <Writer>${escapeXml(manga.author)}</Writer>\n` : '';
+      const artistXml = (manga.artist || manga.author) ? `  <Penciller>${escapeXml(manga.artist || manga.author)}</Penciller>\n` : '';
+      const genreXml = manga.genres ? `  <Genre>${escapeXml(manga.genres)}</Genre>\n` : '';
+
       const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Title>${escapeXml(chapterTitle)}</Title>
   <Series>${escapeXml(manga.title)}</Series>
   <Number>${escapeXml(chapter.chapterNumber || String(chIdx + 1))}</Number>
-  <PageCount>${pageImages.length}</PageCount>
+${summaryXml}${writerXml}${artistXml}${genreXml}  <PageCount>${pageImages.length}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
+  <LanguageISO>en</LanguageISO>
+  <ScanInformation>WeebCentral Kindle Downloader</ScanInformation>
   <Pages>
     <Page Image="0" Bookmark="${escapeXml(chapterTitle)}" Type="Story" />
   </Pages>
@@ -947,7 +961,10 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
       let coverExt = getExtensionFromUrl(manga.coverUrl, coverData.mime);
       let coverBuffer = coverData.buffer;
       if (settings && settings.optimizeKindle !== false) {
-        const opt = await optimizeImageForKindle(coverBuffer, coverData.mime, settings);
+        // Keep the cover poster in full vibrant 24-bit color for KOReader bookshelf, PC and tablet displays!
+        // Interior pages remain in compact 8-bit Grayscale for minimal file size.
+        const coverSettings = { ...settings, grayscale: false, autoCrop: false };
+        const opt = await optimizeImageForKindle(coverBuffer, coverData.mime, coverSettings);
         coverBuffer = opt.buffer;
         if (opt.ext) coverExt = opt.ext;
       }
@@ -1101,12 +1118,19 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
       `    <Page Image="${b.startPage || 0}" Bookmark="${escapeXml(b.title)}" Type="${b.key === 'cover' ? 'FrontCover' : 'Story'}" />`
     ).join('\n');
 
+    const summaryXml = manga.description ? `  <Summary>${escapeXml(manga.description)}</Summary>\n` : '';
+    const writerXml = manga.author ? `  <Writer>${escapeXml(manga.author)}</Writer>\n` : '';
+    const artistXml = (manga.artist || manga.author) ? `  <Penciller>${escapeXml(manga.artist || manga.author)}</Penciller>\n` : '';
+    const genreXml = manga.genres ? `  <Genre>${escapeXml(manga.genres)}</Genre>\n` : '';
+
     const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <Title>${escapeXml(manga.title)}</Title>
   <Series>${escapeXml(manga.title)}</Series>
-  <PageCount>${globalPageCounter}</PageCount>
+${summaryXml}${writerXml}${artistXml}${genreXml}  <PageCount>${globalPageCounter}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
+  <LanguageISO>en</LanguageISO>
+  <ScanInformation>WeebCentral Kindle Downloader</ScanInformation>
   <Pages>
 ${pagesXml}
   </Pages>
@@ -1317,6 +1341,9 @@ async function autoScanArchivesAfterDownload(manga, chaptersList, settings, targ
       };
       if (res.kindle?.reading_progress) {
         updates[readingKey] = res.kindle.reading_progress;
+      }
+      if (res.storage || res.kindle?.storage) {
+        updates['kindle_last_storage'] = res.storage || res.kindle?.storage;
       }
 
       await chrome.storage.local.set(updates);
@@ -2277,4 +2304,89 @@ function sendNativeMessage(message) {
     }
   });
 }
+
+/**
+ * Check for newly released chapters across all saved manga in library.
+ * Updates extension action badge and stores per-series update info.
+ */
+async function checkOngoingMangaUpdates() {
+  try {
+    const data = await chrome.storage.local.get(['saved_manga_list']);
+    const savedList = data.saved_manga_list || [];
+    if (!Array.isArray(savedList) || savedList.length === 0) {
+      if (chrome.action && chrome.action.setBadgeText) {
+        chrome.action.setBadgeText({ text: '' }).catch(() => {});
+      }
+      return { totalNewChapters: 0, seriesUpdates: {} };
+    }
+
+    let totalNewChapters = 0;
+    const seriesUpdates = {};
+
+    for (const manga of savedList) {
+      if (!manga || !manga.seriesId) continue;
+      try {
+        const listUrl = `https://weebcentral.com/series/${manga.seriesId}/full-chapter-list`;
+        const resp = await fetch(listUrl, {
+          headers: {
+            'Accept': 'text/html',
+            'HX-Request': 'true'
+          }
+        });
+        if (!resp.ok) continue;
+
+        const html = await resp.text();
+        const chRegex = /href=["']https?:\/\/weebcentral\.com\/chapters\/([A-Z0-9]+)[^"']*["'][^>]*>([^<]+)/gi;
+        const currentChapters = [];
+        let m;
+        while ((m = chRegex.exec(html)) !== null) {
+          currentChapters.push({ id: m[1], name: m[2].trim() });
+        }
+
+        const dlKey = 'downloaded_' + manga.seriesId;
+        const dlData = await chrome.storage.local.get(dlKey);
+        const downloadedIds = new Set(dlData[dlKey] || []);
+
+        const newChapters = currentChapters.filter(ch => !downloadedIds.has(ch.id));
+        if (newChapters.length > 0) {
+          totalNewChapters += newChapters.length;
+          seriesUpdates[manga.seriesId] = {
+            newCount: newChapters.length,
+            latestChapter: newChapters[0]?.name || '',
+            checkedAt: Date.now()
+          };
+        }
+      } catch (err) {
+        console.warn(`[WeebDownloader] Error checking updates for ${manga.title}:`, err);
+      }
+    }
+
+    if (chrome.action && chrome.action.setBadgeText) {
+      if (totalNewChapters > 0) {
+        chrome.action.setBadgeText({ text: String(totalNewChapters) }).catch(() => {});
+        chrome.action.setBadgeBackgroundColor({ color: '#2563eb' }).catch(() => {});
+      } else {
+        chrome.action.setBadgeText({ text: '' }).catch(() => {});
+      }
+    }
+
+    await chrome.storage.local.set({ ongoing_updates_cache: seriesUpdates }).catch(() => {});
+    return { totalNewChapters, seriesUpdates };
+  } catch (e) {
+    console.error('[WeebDownloader] checkOngoingMangaUpdates failed:', e);
+    return { totalNewChapters: 0, seriesUpdates: {} };
+  }
+}
+
+// Setup periodic 6-hour alarm for ongoing manga tracker
+try {
+  if (chrome.alarms) {
+    chrome.alarms.create('check_ongoing_manga', { periodInMinutes: 360 });
+    chrome.alarms.onAlarm.addListener(alarm => {
+      if (alarm.name === 'check_ongoing_manga') {
+        checkOngoingMangaUpdates();
+      }
+    });
+  }
+} catch (e) {}
 

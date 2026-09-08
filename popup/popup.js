@@ -41,6 +41,7 @@ let hideDownloaded = false;
 let currentReadingProgress = null;
 let chapterSortOrder = 'asc'; // 'asc' (1->N) or 'desc' (N->1)
 let savedMangaList = [];
+let ongoingUpdatesCache = {};
 let browserTabManga = null;
 let browserTabChapters = [];
 const sessionRemovedIds = new Set();
@@ -68,10 +69,13 @@ const elements = {
   savedMangaPanel: document.getElementById('saved-manga-panel'),
   savedMangaList: document.getElementById('saved-manga-list'),
   savedMangaCount: document.getElementById('saved-manga-count'),
+  btnCheckUpdates: document.getElementById('btn-check-updates'),
   btnCloseSavedPanel: document.getElementById('btn-close-saved-panel'),
   chapterCountBadge: document.getElementById('chapter-count-badge'),
   selectionCountBadge: document.getElementById('selection-count-badge'),
   readingProgressBadge: document.getElementById('reading-progress-badge'),
+  kindleStorageBadge: document.getElementById('kindle-storage-badge'),
+  settingsKindleStorage: document.getElementById('settings-kindle-storage'),
 
   // Controls
   rangeInput: document.getElementById('range-input'),
@@ -168,6 +172,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadSavedMangaList();
 
   try {
+    const cachedData = await chrome.storage.local.get(['ongoing_updates_cache', 'kindle_last_storage']);
+    if (cachedData && cachedData.ongoing_updates_cache) {
+      ongoingUpdatesCache = cachedData.ongoing_updates_cache;
+    }
+    if (cachedData && cachedData.kindle_last_storage) {
+      updateKindleStorageUI(cachedData.kindle_last_storage);
+    }
+  } catch (e) {}
+
+  try {
     const sortStored = await chrome.storage.local.get('weeb_chapter_sort_order');
     if (sortStored && sortStored.weeb_chapter_sort_order) {
       chapterSortOrder = sortStored.weeb_chapter_sort_order;
@@ -244,6 +258,29 @@ function setupEventListeners() {
   }
   if (elements.btnCloseSavedPanel) {
     elements.btnCloseSavedPanel.addEventListener('click', () => toggleSavedMangaPanel(false));
+  }
+  if (elements.btnCheckUpdates) {
+    elements.btnCheckUpdates.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      elements.btnCheckUpdates.classList.add('spinning');
+      try {
+        const resp = await chrome.runtime.sendMessage({ action: 'CHECK_ONGOING_UPDATES' });
+        if (resp && resp.success && resp.updates) {
+          ongoingUpdatesCache = resp.updates.seriesUpdates || {};
+          renderSavedMangaList();
+          const total = resp.updates.totalNewChapters || 0;
+          if (total > 0) {
+            showBanner(`Найдено новых глав: ${total}`, 'info', 3000);
+          } else {
+            showBanner('Все серии обновлены, новых глав нет', 'info', 2000);
+          }
+        }
+      } catch (err) {
+        console.warn('Update check failed:', err);
+      } finally {
+        elements.btnCheckUpdates.classList.remove('spinning');
+      }
+    });
   }
   if (elements.savedMangaList) {
     elements.savedMangaList.addEventListener('click', async (e) => {
@@ -848,6 +885,11 @@ function renderSavedMangaList() {
       isRemoved ? 'is-removed' : ''
     ].filter(Boolean).join(' ');
 
+    const updateInfo = ongoingUpdatesCache && ongoingUpdatesCache[item.seriesId];
+    const updateBadgeHtml = (updateInfo && updateInfo.newCount > 0)
+      ? `<span class="badge-update" title="${updateInfo.newCount} новых глав (последняя: ${updateInfo.latestChapter || ''})">+${updateInfo.newCount}</span>`
+      : '';
+
     return `
       <div class="${classes}" data-series-id="${item.seriesId}">
         <img class="saved-item-thumb" src="${thumbUrl}" alt="Cover" onerror="this.src='../icons/icon128.png'">
@@ -855,6 +897,7 @@ function renderSavedMangaList() {
           <div class="saved-item-title" title="${escapedTitle}">${escapedTitle}</div>
           <div class="saved-item-sub">
             <span>${count} глав</span>
+            ${updateBadgeHtml}
             ${isBrowserPinned ? '<span class="saved-badge-browser" title="Страница открыта во вкладке браузера">🌐 В браузере</span>' : ''}
             ${isRemoved ? '<span class="saved-badge-removed">Удалена</span>' : ''}
           </div>
@@ -1530,6 +1573,11 @@ async function scanArchivesAndMarkChapters(manualTrigger = false) {
         updateReadingProgressBadge(currentReadingProgress);
         toSave[readKey] = currentReadingProgress;
       }
+      const storageInfo = data.storage || data.kindle?.storage;
+      if (storageInfo) {
+        updateKindleStorageUI(storageInfo);
+        toSave['kindle_last_storage'] = storageInfo;
+      }
       await chrome.storage.local.set(toSave);
 
       // Re-render
@@ -1920,6 +1968,32 @@ function updateReadingProgressBadge(prog) {
   } else {
     elements.readingProgressBadge.classList.add('hidden');
   }
+}
+
+/**
+ * Update Kindle storage badge in header tags and settings
+ */
+function updateKindleStorageUI(storage) {
+  if (!storage || !storage.free_str) return;
+  const text = `📱 Kindle: ${storage.free_str} free`;
+
+  const updateBadge = (el) => {
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('hidden', 'storage-low', 'storage-warning');
+    if (storage.low_space) {
+      el.classList.add('storage-low');
+      el.title = `Внимание! На Kindle осталось мало места (${storage.free_str}). Рекомендуется удалить прочитанные тома.`;
+    } else if (storage.free_mb && storage.free_mb < 800) {
+      el.classList.add('storage-warning');
+      el.title = `Свободное место на Kindle: ${storage.free_str}`;
+    } else {
+      el.title = `Свободное место на Kindle: ${storage.free_str}${storage.total_mb ? ' из ' + (Math.round(storage.total_mb / 1024 * 10) / 10) + ' GB' : ''}`;
+    }
+  };
+
+  updateBadge(elements.kindleStorageBadge);
+  updateBadge(elements.settingsKindleStorage);
 }
 
 /**
@@ -2322,7 +2396,14 @@ async function testSshConnection() {
 
     if (response && response.success && response.result) {
       if (response.result.status === 'success') {
-        elements.sshTestResult.textContent = '✅ Connected!';
+        const storage = response.result.storage;
+        let storageTxt = '';
+        if (storage && storage.free_str) {
+          storageTxt = ` (${storage.free_str} free)`;
+          updateKindleStorageUI(storage);
+          chrome.storage.local.set({ kindle_last_storage: storage }).catch(() => {});
+        }
+        elements.sshTestResult.textContent = `✅ Connected!${storageTxt}`;
         elements.sshTestResult.className = 'test-result-indicator success';
       } else {
         elements.sshTestResult.textContent = `❌ ${response.result.message}`;

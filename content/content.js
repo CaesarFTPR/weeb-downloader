@@ -91,6 +91,37 @@ async function getMangaInfo() {
     }
   }
 
+  // Additional metadata for ComicInfo.xml
+  let description = '';
+  const ogDesc = document.querySelector('meta[property="og:description"]');
+  if (ogDesc && ogDesc.content) {
+    description = ogDesc.content.trim();
+  }
+  if (!description) {
+    const descEl = document.querySelector('section[x-data] p, article p, [x-show*="description"]');
+    if (descEl) description = descEl.textContent.trim();
+  }
+
+  // Author and Artist
+  let author = '';
+  const authorLinks = document.querySelectorAll('a[href*="author="], a[href*="/author/"]');
+  if (authorLinks.length > 0) {
+    author = Array.from(authorLinks).map(a => a.textContent.trim()).filter(Boolean).join(', ');
+  }
+
+  // Genres
+  const genreLinks = document.querySelectorAll('a[href*="genre="], a[href*="/genre/"], a[href*="/tag/"]');
+  const genres = Array.from(genreLinks).map(a => a.textContent.trim()).filter(Boolean);
+
+  // Status (Ongoing / Completed)
+  let status = 'Ongoing';
+  const statusEl = document.querySelector('[class*="status"], a[href*="status="]');
+  if (statusEl) {
+    const txt = statusEl.textContent.trim();
+    if (/completed/i.test(txt)) status = 'Completed';
+    else if (/ongoing/i.test(txt)) status = 'Ongoing';
+  }
+
   // Clean title for folder safety
   const safeTitle = title.replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -99,6 +130,11 @@ async function getMangaInfo() {
     originalTitle: title,
     seriesId,
     coverUrl,
+    description: description || '',
+    author: author || '',
+    artist: author || '',
+    genres: genres.join(', '),
+    status: status || 'Ongoing',
     currentUrl: url,
     isSeries,
     isChapter

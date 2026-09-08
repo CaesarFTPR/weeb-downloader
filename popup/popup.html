@@ -55,6 +55,7 @@
             <div class="manga-tags">
               <span id="chapter-count-badge" class="badge">0 chapters</span>
               <span id="reading-progress-badge" class="badge badge-reading hidden" title="Reading position in KOReader on Kindle">📖 Kindle: 0%</span>
+              <span id="kindle-storage-badge" class="badge badge-storage hidden" title="Available storage on Kindle">📱 Kindle: 0 GB free</span>
             </div>
           </div>
           <button id="btn-save-manga-header" class="btn-toggle-save btn-save-header is-not-saved" type="button" title="Добавить в список сохранённых">➕</button>
@@ -64,7 +65,10 @@
         <div id="saved-manga-panel" class="saved-manga-panel hidden">
           <div class="saved-manga-header">
             <span class="saved-manga-heading">📚 Сохранённые серии <span id="saved-manga-count" class="badge">0</span></span>
-            <button id="btn-close-saved-panel" class="btn-icon btn-close-saved" type="button" title="Закрыть">✕</button>
+            <div class="saved-manga-header-actions" style="display: flex; align-items: center; gap: 6px;">
+              <button id="btn-check-updates" class="btn-check-updates" type="button" title="Проверить новые главы">🔄</button>
+              <button id="btn-close-saved-panel" class="btn-icon btn-close-saved" type="button" title="Закрыть">✕</button>
+            </div>
           </div>
           <div id="saved-manga-list" class="saved-manga-list">
             <!-- Rendered dynamically -->
@@ -302,7 +306,10 @@
 
         <!-- Kindle SSH / SCP Settings -->
         <section class="settings-group">
-          <h3 class="settings-title">📱 Kindle SSH / SCP Connection</h3>
+          <div class="settings-title-row" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+            <h3 class="settings-title" style="margin-bottom: 0;">📱 Kindle SSH / SCP Connection</h3>
+            <span id="settings-kindle-storage" class="badge badge-storage hidden"></span>
+          </div>
 
           <div class="form-row-2">
             <div class="form-field">

@@ -22,7 +22,8 @@
     "downloads",
     "storage",
     "nativeMessaging",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "https://weebcentral.com/*",

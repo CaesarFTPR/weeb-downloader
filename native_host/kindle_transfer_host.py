@@ -134,8 +134,40 @@ def execute_with_auth(base_cmd, password=None, key_path=None, timeout=None):
             except Exception:
                 pass
 
+def parse_df_output(text):
+    """Parse df output for /mnt/us to extract free space in MB and GB."""
+    if not text:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if '/mnt/us' in line:
+            parts = line.split()
+            if len(parts) >= 4:
+                try:
+                    total_val = float(parts[1])
+                    free_val = float(parts[3])
+                    if total_val > 100_000:
+                        free_mb = round(free_val / 1024)
+                        total_mb = round(total_val / 1024)
+                    else:
+                        free_mb = round(free_val)
+                        total_mb = round(total_val)
+                    if free_mb >= 1024:
+                        free_str = f"{free_mb / 1024:.1f} GB free"
+                    else:
+                        free_str = f"{free_mb} MB free"
+                    return {
+                        'free_mb': free_mb,
+                        'total_mb': total_mb,
+                        'free_str': free_str,
+                        'low_space': free_mb < 300
+                    }
+                except Exception:
+                    pass
+    return None
+
 def test_ssh(host, port, user, password=None, key_path=None):
-    """Test SSH connectivity to Kindle."""
+    """Test SSH connectivity to Kindle and retrieve available storage space."""
     ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
     cmd = [
         ssh_bin,
@@ -143,14 +175,19 @@ def test_ssh(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        'echo KINDLE_OK'
+        'echo KINDLE_OK; echo __DF__; df -m /mnt/us 2>/dev/null || df /mnt/us 2>/dev/null'
     ]
     try:
         res = execute_with_auth(cmd, password=password, key_path=key_path, timeout=10)
         if res.returncode == 0 and 'KINDLE_OK' in res.stdout:
+            storage = parse_df_output(res.stdout)
+            msg = f'Connected to Kindle ({user}@{host}:{port})!'
+            if storage and storage.get('free_str'):
+                msg += f" [{storage['free_str']}]"
             return {
                 'status': 'success',
-                'message': f'Connected to Kindle ({user}@{host}:{port})!'
+                'message': msg,
+                'storage': storage
             }
 
         # Fallback check for kindle.local if configured IP failed
@@ -161,13 +198,18 @@ def test_ssh(host, port, user, password=None, key_path=None):
                 '-o', 'StrictHostKeyChecking=accept-new',
                 '-p', str(port),
                 f'{user}@kindle.local',
-                'echo KINDLE_OK'
+                'echo KINDLE_OK; echo __DF__; df -m /mnt/us 2>/dev/null || df /mnt/us 2>/dev/null'
             ]
             alt_res = execute_with_auth(alt_cmd, password=password, key_path=key_path, timeout=5)
             if alt_res and alt_res.returncode == 0 and 'KINDLE_OK' in alt_res.stdout:
+                storage = parse_df_output(alt_res.stdout)
+                msg = f'Connected via kindle.local! (Configured {host} failed - you can change Host to kindle.local)'
+                if storage and storage.get('free_str'):
+                    msg += f" [{storage['free_str']}]"
                 return {
                     'status': 'success',
-                    'message': f'Connected via kindle.local! (Configured {host} failed - you can change Host to kindle.local)'
+                    'message': msg,
+                    'storage': storage
                 }
 
         err = res.stderr.strip() or res.stdout.strip() or f'Exit code {res.returncode}'
@@ -183,10 +225,14 @@ def test_ssh(host, port, user, password=None, key_path=None):
     except subprocess.TimeoutExpired:
         if host != 'kindle.local':
             try:
-                alt_cmd = [ssh_bin, '-o', 'ConnectTimeout=3', '-o', 'StrictHostKeyChecking=accept-new', '-p', str(port), f'{user}@kindle.local', 'echo KINDLE_OK']
+                alt_cmd = [ssh_bin, '-o', 'ConnectTimeout=3', '-o', 'StrictHostKeyChecking=accept-new', '-p', str(port), f'{user}@kindle.local', 'echo KINDLE_OK; echo __DF__; df -m /mnt/us 2>/dev/null || df /mnt/us 2>/dev/null']
                 alt_res = execute_with_auth(alt_cmd, password=password, key_path=key_path, timeout=5)
                 if alt_res and alt_res.returncode == 0 and 'KINDLE_OK' in alt_res.stdout:
-                    return {'status': 'success', 'message': f'Connected via kindle.local! (Configured {host} timed out)'}
+                    storage = parse_df_output(alt_res.stdout)
+                    msg = f'Connected via kindle.local! (Configured {host} timed out)'
+                    if storage and storage.get('free_str'):
+                        msg += f" [{storage['free_str']}]"
+                    return {'status': 'success', 'message': msg, 'storage': storage}
             except Exception:
                 pass
         return {'status': 'error', 'message': f'Connection to {host}:{port} timed out (Kindle is likely asleep).'}
@@ -866,7 +912,8 @@ def inspect_remote_volume(host, port, user, remote_cbz_path, password=None, key_
         f"  export LD_LIBRARY_PATH=/mnt/us/koreader/libs; nice -n 19 /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect '{clean_path}' 2>/dev/null || unzip -l '{clean_path}' 2>/dev/null; "
         f"else "
         f"  echo '__NOT_FOUND__'; "
-        f"fi"
+        f"fi; "
+        f"echo '__DF__'; df -m /mnt/us 2>/dev/null || df /mnt/us 2>/dev/null;"
     )
     base_cmd = [
         ssh_bin,
@@ -881,8 +928,9 @@ def inspect_remote_volume(host, port, user, remote_cbz_path, password=None, key_
         return {'status': 'error', 'connected': False, 'message': 'Kindle unreachable or SSH failed'}
 
     out = res.stdout.strip()
+    storage = parse_df_output(out)
     if '__NOT_FOUND__' in out:
-        return {'status': 'success', 'connected': True, 'exists': False, 'chapters': [], 'chapter_keys': []}
+        return {'status': 'success', 'connected': True, 'exists': False, 'chapters': [], 'chapter_keys': [], 'storage': storage}
 
     # Try JSON parse from merge_volume.lua
     for line in out.splitlines():
@@ -892,6 +940,7 @@ def inspect_remote_volume(host, port, user, remote_cbz_path, password=None, key_
                 data = json.loads(line)
                 if data.get('status') == 'success':
                     data['connected'] = True
+                    data['storage'] = storage
                     return data
             except Exception:
                 pass
@@ -978,6 +1027,7 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
     kindle_volume_path = None
     kindle_error = None
     kindle_reading_progress = None
+    kindle_storage = None
 
     if host:
         ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
@@ -1057,7 +1107,8 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
             f"  fi; "
             f"else "
             f"  echo '__NOT_FOUND__'; "
-            f"fi"
+            f"fi; "
+            f"echo '__DF__'; df -m /mnt/us 2>/dev/null || df /mnt/us 2>/dev/null;"
         )
 
         cmd = [
@@ -1088,6 +1139,7 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
 
         if res and res.returncode == 0:
             kindle_connected = True
+            kindle_storage = parse_df_output(res.stdout)
             mode = None
             inspect_lines = []
             for raw_line in res.stdout.splitlines():
@@ -1165,8 +1217,10 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
             'remote_path': kindle_volume_path,
             'chapter_keys': sorted(list(kindle_keys)),
             'reading_progress': kindle_reading_progress,
-            'error': kindle_error
+            'error': kindle_error,
+            'storage': kindle_storage
         },
+        'storage': kindle_storage,
         'all_chapter_keys': all_chapter_keys
     }
 
