@@ -317,16 +317,22 @@ def extract_metadata_from_cbz(cbz_path):
         with zipfile.ZipFile(cbz_path, 'r') as zf:
             page_count = 0
             comic_info_xml = None
+            chapter_dirs = set()
             for name in zf.namelist():
                 ext = os.path.splitext(name)[1].lower()
                 if ext in ('.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif'):
                     page_count += 1
+                parts = name.split('/')
+                if len(parts) > 1 and parts[0] and ('chapter' in parts[0].lower() or re.match(r'^\d+\.', parts[0])):
+                    chapter_dirs.add(parts[0])
                 if name.lower() == 'comicinfo.xml' and not comic_info_xml:
                     try:
                         comic_info_xml = zf.read(name).decode('utf-8', errors='ignore')
                     except Exception:
                         pass
             meta['pages'] = page_count
+            if chapter_dirs:
+                meta['chapters_count'] = str(len(chapter_dirs))
 
             if comic_info_xml:
                 try:
@@ -392,7 +398,8 @@ def extract_metadata_from_cbz(cbz_path):
                     if volume: meta['series_index'] = int(volume) if volume.isdigit() else volume
                     elif number: meta['series_index'] = int(number) if number.isdigit() else number
                     if count: meta['total_chapters'] = count.strip()
-                    if ch_cnt: meta['chapters_count'] = ch_cnt.strip()
+                    if ch_cnt and not meta.get('chapters_count'):
+                        meta['chapters_count'] = ch_cnt.strip()
                     if fmt: meta['manga_type'] = fmt.strip()
                     if status: meta['status'] = status.strip()
                     if year: meta['released'] = year.strip()
