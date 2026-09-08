@@ -343,6 +343,41 @@ def extract_metadata_from_cbz(cbz_path):
                     year = root.findtext('Year')
                     age_rating = root.findtext('AgeRating')
                     scan_info = root.findtext('ScanInformation')
+                    status = root.findtext('Status')
+                    off_trans = root.findtext('OfficialTranslation')
+                    anime = root.findtext('AnimeAdaptation')
+                    related = root.findtext('RelatedSeries')
+                    ch_cnt = root.findtext('ChaptersCount')
+
+                    # Also extract from summary passport if present
+                    if summary:
+                        if not status:
+                            m = re.search(r'•\s*Статус:\s*([^\n]+)', summary)
+                            if m: status = m.group(1).strip()
+                        if not fmt:
+                            m = re.search(r'•\s*Тип:\s*([^\n]+)', summary)
+                            if m: fmt = m.group(1).strip()
+                        if not year:
+                            m = re.search(r'•\s*Год релиза:\s*([^\n]+)', summary)
+                            if m: year = m.group(1).strip()
+                        if not off_trans:
+                            m = re.search(r'•\s*Официальный перевод:\s*([^\n]+)', summary)
+                            if m: off_trans = m.group(1).strip()
+                        if not anime:
+                            m = re.search(r'•\s*Аниме(?:-адаптация)?:\s*([^\n]+)', summary)
+                            if m: anime = m.group(1).strip()
+                        if not age_rating:
+                            m = re.search(r'•\s*18\+\s*Контент:\s*([^\n]+)', summary)
+                            if m: age_rating = m.group(1).strip()
+                        if not related:
+                            m = re.search(r'•\s*Связанные серии:\s*([^\n]+)', summary)
+                            if m: related = m.group(1).strip()
+                        if not count:
+                            m = re.search(r'•\s*Всего глав:\s*(\d+)', summary) or re.search(r'из\s*(\d+)\s*на сайте', summary)
+                            if m: count = m.group(1).strip()
+                        if not ch_cnt:
+                            m = re.search(r'•\s*Глав в томе:\s*(\d+)', summary)
+                            if m: ch_cnt = m.group(1).strip()
 
                     if title: meta['title'] = html.unescape(title).strip()
                     if series: meta['series'] = html.unescape(series).strip()
@@ -352,8 +387,13 @@ def extract_metadata_from_cbz(cbz_path):
                     if volume: meta['series_index'] = int(volume) if volume.isdigit() else volume
                     elif number: meta['series_index'] = int(number) if number.isdigit() else number
                     if count: meta['total_chapters'] = count.strip()
+                    if ch_cnt: meta['chapters_count'] = ch_cnt.strip()
                     if fmt: meta['manga_type'] = fmt.strip()
+                    if status: meta['status'] = status.strip()
                     if year: meta['released'] = year.strip()
+                    if off_trans: meta['official_translation'] = off_trans.strip()
+                    if anime: meta['anime_adaptation'] = anime.strip()
+                    if related: meta['related_series'] = related.strip()
                     if age_rating: meta['adult_content'] = 'Yes' if ('18' in age_rating or 'adult' in age_rating.lower()) else 'No'
                     if scan_info: meta['source'] = scan_info.strip()
                 except Exception as e:
@@ -1035,7 +1075,7 @@ def ensure_koreader_manga_patch(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        "if [ -f /mnt/us/koreader/patches/2-manga-bookinfo.lua ]; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+        "if grep -q -- 'Version: 2.1.0' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
     ]
     check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
     if not check_res or check_res.returncode != 0:
@@ -1064,8 +1104,8 @@ def ensure_koreader_manga_patch(host, port, user, password=None, key_path=None):
 
 def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
     """
-    Ensure /mnt/us/koreader/merge_volume.lua exists and is up to date on Kindle (v3.4.0).
-    Deploys it via SCP if missing or outdated. Also ensures 2-manga-bookinfo.lua user patch.
+    Ensure /mnt/us/koreader/merge_volume.lua exists and is up to date on Kindle (v3.5.0).
+    Deploys it via SCP if missing or outdated. Also ensures 2-manga-bookinfo.lua user patch (v2.1.0).
     """
     ssh_bin = shutil.which('ssh') or '/usr/bin/ssh'
     scp_bin = shutil.which('scp') or '/usr/bin/scp'
@@ -1085,7 +1125,7 @@ def ensure_remote_merge_script(host, port, user, password=None, key_path=None):
         '-o', 'StrictHostKeyChecking=accept-new',
         '-p', str(port),
         f'{user}@{host}',
-        "if grep -q -- 'version: 3.4.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
+        "if grep -q -- 'version: 3.5.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then echo 'OK'; else echo 'NEED_DEPLOY'; fi"
     ]
     check_res = execute_with_auth(check_cmd, password=password, key_path=key_path, timeout=5)
     if not check_res or check_res.returncode != 0:
@@ -1260,7 +1300,7 @@ def inspect_remote_volume(host, port, user, remote_cbz_path, password=None, key_
         'chapter_keys': chapter_keys
     }
 
-def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=None, host='kindle.local', port=2222, user='root', password=None, key_path=None):
+def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=None, host='kindle.local', port=2222, user='root', password=None, key_path=None, metadata=None):
     """
     Scans both local PC and Kindle for cumulative archives and loose chapter files.
     Returns combined chapter keys and individual breakdown.
@@ -1289,6 +1329,11 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
         if os.path.exists(cand) and not os.path.isdir(cand):
             pc_volume_found = True
             pc_volume_path = cand
+            if metadata:
+                try:
+                    ensure_koreader_sidecar_local(cand, metadata=metadata)
+                except Exception as e:
+                    log_debug(f"scan_archives local metadata ensure error: {e}")
             vol_res = inspect_volume(cand)
             if vol_res.get('status') == 'success':
                 for k in vol_res.get('chapter_keys', []):
@@ -1389,7 +1434,7 @@ def scan_archives(local_folder, volume_name, remote_folder=None, remote_base=Non
             f"{cleanup_sh}"
             f"if [ -n \"$VOL\" ]; then "
             f"  echo \"__VOL__:$VOL\"; "
-            f"  if grep -q -- 'merge_volume.lua' /mnt/us/koreader/merge_volume.lua 2>/dev/null; then "
+            f"  if grep -q -- 'version: 3.5.0' /mnt/us/koreader/merge_volume.lua 2>/dev/null && grep -q -- 'Version: 2.1.0' /mnt/us/koreader/patches/2-manga-bookinfo.lua 2>/dev/null; then "
             f"    echo '__INSPECT__'; "
             f"    export LD_LIBRARY_PATH=/mnt/us/koreader/libs; nice -n 19 /mnt/us/koreader/luajit /mnt/us/koreader/merge_volume.lua --inspect \"$VOL\" 2>/dev/null || unzip -l \"$VOL\" 2>/dev/null; "
             f"  else "
@@ -2159,6 +2204,7 @@ def main():
                 volume_name = req.get('volume_name', '')
                 remote_folder = req.get('remote_folder', '')
                 remote_base = req.get('remote_base', '')
+                metadata = req.get('metadata')
                 result = scan_archives(
                     local_folder,
                     volume_name,
@@ -2168,7 +2214,8 @@ def main():
                     port=port,
                     user=user,
                     password=password,
-                    key_path=key_path
+                    key_path=key_path,
+                    metadata=metadata
                 )
                 send_message(result)
             elif action == 'append_to_volume':

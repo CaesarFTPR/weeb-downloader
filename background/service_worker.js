@@ -177,7 +177,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       port: request.port,
       user: request.user,
       password: request.password,
-      key_path: request.keyPath
+      key_path: request.keyPath,
+      metadata: request.metadata
     })
       .then(res => sendResponse({ success: true, result: res }))
       .catch(err => sendResponse({ success: false, error: err.message }));
@@ -637,6 +638,10 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
       const formatXml = manga.type ? `  <Format>${escapeXml(manga.type)}</Format>\n` : '';
       const yearXml = manga.released ? `  <Year>${escapeXml(manga.released)}</Year>\n` : '';
       const ageRatingXml = manga.adultContent ? `  <AgeRating>${escapeXml(manga.adultContent === 'Yes' ? 'Adults Only 18+' : 'Teen')}</AgeRating>\n` : '';
+      const statusXml = manga.status ? `  <Status>${escapeXml(manga.status)}</Status>\n` : '';
+      const offTransXml = manga.officialTranslation ? `  <OfficialTranslation>${escapeXml(manga.officialTranslation)}</OfficialTranslation>\n` : '';
+      const animeXml = manga.animeAdaptation ? `  <AnimeAdaptation>${escapeXml(manga.animeAdaptation)}</AnimeAdaptation>\n` : '';
+      const relatedXml = manga.relatedSeries ? `  <RelatedSeries>${escapeXml(manga.relatedSeries)}</RelatedSeries>\n` : '';
 
       const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
@@ -645,7 +650,7 @@ async function downloadIndividualChapters(tabId, chapters, downloadPaths, format
   <Number>${escapeXml(chapter.chapterNumber || String(chIdx + 1))}</Number>
   <Volume>1</Volume>
   <Count>${escapeXml(String(manga.totalChapters || totalChapters || ''))}</Count>
-${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}  <PageCount>${pageImages.length}</PageCount>
+${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}${statusXml}${offTransXml}${animeXml}${relatedXml}  <PageCount>${pageImages.length}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
   <LanguageISO>en</LanguageISO>
   <ScanInformation>WeebCentral Kindle Downloader</ScanInformation>
@@ -1168,6 +1173,11 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
     const formatXml = manga.type ? `  <Format>${escapeXml(manga.type)}</Format>\n` : '';
     const yearXml = manga.released ? `  <Year>${escapeXml(manga.released)}</Year>\n` : '';
     const ageRatingXml = manga.adultContent ? `  <AgeRating>${escapeXml(manga.adultContent === 'Yes' ? 'Adults Only 18+' : 'Teen')}</AgeRating>\n` : '';
+    const statusXml = manga.status ? `  <Status>${escapeXml(manga.status)}</Status>\n` : '';
+    const offTransXml = manga.officialTranslation ? `  <OfficialTranslation>${escapeXml(manga.officialTranslation)}</OfficialTranslation>\n` : '';
+    const animeXml = manga.animeAdaptation ? `  <AnimeAdaptation>${escapeXml(manga.animeAdaptation)}</AnimeAdaptation>\n` : '';
+    const relatedXml = manga.relatedSeries ? `  <RelatedSeries>${escapeXml(manga.relatedSeries)}</RelatedSeries>\n` : '';
+    const chCountXml = `  <ChaptersCount>${escapeXml(String(totalVolumeChapters))}</ChaptersCount>\n`;
 
     const comicInfoXml = `<?xml version="1.0" encoding="utf-8"?>
 <ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
@@ -1175,7 +1185,7 @@ async function downloadCumulativeTome(tabId, chapters, downloadPaths, format, ma
   <Series>${escapeXml(manga.title)}</Series>
   <Volume>${volumeNum}</Volume>
   <Count>${escapeXml(String(manga.totalChapters || totalToDownload || ''))}</Count>
-${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}  <PageCount>${globalPageCounter}</PageCount>
+${summaryXml}${writerXml}${artistXml}${genreXml}${formatXml}${yearXml}${ageRatingXml}${statusXml}${offTransXml}${animeXml}${relatedXml}${chCountXml}  <PageCount>${globalPageCounter}</PageCount>
   <Manga>YesAndRightToLeft</Manga>
   <LanguageISO>en</LanguageISO>
   <ScanInformation>WeebCentral Kindle Downloader</ScanInformation>

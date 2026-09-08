@@ -1,6 +1,6 @@
 --[[
   merge_volume.lua
-  -- version: 3.4.0
+  -- version: 3.5.0
   True In-Place Binary CBZ Volume Merger for Kindle KOReader using native LuaJIT & libc.
   Time Complexity: O(delta) - appends new chapters in ~0.15s without rewriting existing chapters.
 
@@ -210,6 +210,23 @@ local function update_koreader_metadata(target_cbz, pages)
             local age_rating = unescape_xml(xml:match("<AgeRating>(.-)</AgeRating>"))
             local scan_info = unescape_xml(xml:match("<ScanInformation>(.-)</ScanInformation>"))
 
+            local status = unescape_xml(xml:match("<Status>(.-)</Status>"))
+            local official_translation = unescape_xml(xml:match("<OfficialTranslation>(.-)</OfficialTranslation>"))
+            local anime_adaptation = unescape_xml(xml:match("<AnimeAdaptation>(.-)</AnimeAdaptation>"))
+            local related_series = unescape_xml(xml:match("<RelatedSeries>(.-)</RelatedSeries>"))
+            local chapters_count = unescape_xml(xml:match("<ChaptersCount>(.-)</ChaptersCount>"))
+
+            -- Also extract from summary passport if present
+            if not status and summary then status = summary:match("• Статус:%s*([^\n]+)") end
+            if not fmt and summary then fmt = summary:match("• Тип:%s*([^\n]+)") end
+            if not year and summary then year = summary:match("• Год релиза:%s*([^\n]+)") end
+            if not official_translation and summary then official_translation = summary:match("• Официальный перевод:%s*([^\n]+)") end
+            if not anime_adaptation and summary then anime_adaptation = summary:match("• Аниме%-адаптация:%s*([^\n]+)") end
+            if not age_rating and summary then age_rating = summary:match("• 18%+ Контент:%s*([^\n]+)") end
+            if not related_series and summary then related_series = summary:match("• Связанные серии:%s*([^\n]+)") end
+            if not count and summary then count = summary:match("• Всего глав:%s*(%d+)") or summary:match("из (%d+) на сайте") end
+            if not chapters_count and summary then chapters_count = summary:match("• Глав в томе:%s*(%d+)") end
+
             if title then
                 data["doc_props"]["title"] = title
                 data["doc_props"]["display_title"] = title
@@ -224,8 +241,13 @@ local function update_koreader_metadata(target_cbz, pages)
                 data["doc_props"]["series_index"] = tonumber(number)
             end
             if count then data["doc_props"]["total_chapters"] = count end
+            if chapters_count then data["doc_props"]["chapters_count"] = chapters_count end
             if fmt then data["doc_props"]["manga_type"] = fmt end
+            if status then data["doc_props"]["status"] = status end
             if year then data["doc_props"]["released"] = year end
+            if official_translation then data["doc_props"]["official_translation"] = official_translation end
+            if anime_adaptation then data["doc_props"]["anime_adaptation"] = anime_adaptation end
+            if related_series then data["doc_props"]["related_series"] = related_series end
             if age_rating then
                 data["doc_props"]["adult_content"] = (age_rating:find("18") or age_rating:lower():find("adult")) and "Yes" or "No"
             end

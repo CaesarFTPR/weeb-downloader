@@ -1559,7 +1559,8 @@ async function scanArchivesAndMarkChapters(manualTrigger = false) {
       port: currentSettings.sshPort || 2222,
       user: currentSettings.sshUser || 'root',
       password: currentSettings.sshPassword || '',
-      keyPath: currentSettings.sshKeyPath || ''
+      keyPath: currentSettings.sshKeyPath || '',
+      metadata: currentManga
     });
 
     if (res && res.success && res.result && res.result.status === 'success') {
